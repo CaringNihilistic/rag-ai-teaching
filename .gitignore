@@ -1,0 +1,42 @@
+# ==============================
+# LARGE DATA FILES (do not push)
+# ==============================
+data/
+audios/
+audios_1/
+
+# ==============================
+# LARGE MODEL FILES (do not push)
+# ==============================
+models/
+*.index
+*.npy
+
+# ==============================
+# GENERATED / TEMP FILES
+# ==============================
+chunks/
+*checkpoint*
+unmatched_chunks.txt
+all_playlists_raw.json
+video_urls.json
+video_url_combined.json
+
+# ==============================
+# PYTHON
+# ==============================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
+env/
+.venv/
+
+# ==============================
+# OS FILES
+# ==============================
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Teaching Assistant</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+<div class="chat-container">
+
+    <!-- HEADER -->
+    <header class="chat-header">
+        <div>
+            <h1>🤖 AI Teaching Assistant</h1>
+            <p>Machine Learning & Deep Learning Tutor</p>
+        </div>
+        <button class="theme-toggle" onclick="toggleTheme()">🌙 / ☀️</button>
+    </header>
+
+    <!-- CHAT -->
+    <main class="chat-messages" id="chatMessages">
+        <div class="example-questions">
+            <p>💡 Suggested Questions</p>
+            <span onclick="askQuestion('What is overfitting in machine learning?')">What is overfitting?</span>
+            <span onclick="askQuestion('How do CNNs work?')">How do CNNs work?</span>
+            <span onclick="askQuestion('What is gradient descent?')">What is gradient descent?</span>
+            <span onclick="askQuestion('Explain backpropagation')">Explain backpropagation</span>
+            <span onclick="askQuestion('What are RNNs?')">What are RNNs?</span>
+            <span onclick="askQuestion('What is an LSTM?')">What is an LSTM?</span>
+        </div>
+    </main>
+
+    <!-- TYPING INDICATOR -->
+    <div class="typing-indicator" id="typingIndicator">
+        <span></span><span></span><span></span>
+    </div>
+
+    <!-- INPUT -->
+    <footer class="chat-input-container">
+        <input
+            id="userInput"
+            class="chat-input"
+            placeholder="Ask about ML/DL concepts..."
+            onkeypress="handleKeyPress(event)"
+        >
+        <button class="send-button" onclick="sendMessage()">Send ✈️</button>
+    </footer>
+
+</div>
+
+<script>
+const chatMessages = document.getElementById("chatMessages");
+const userInput = document.getElementById("userInput");
+const typingIndicator = document.getElementById("typingIndicator");
+
+/* =====================
+   THEME (PERSISTENT)
+===================== */
+function toggleTheme() {
+    const html = document.documentElement;
+    const next = html.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    html.setAttribute("data-theme", next);
+    localStorage.setItem("theme", next);
+}
+
+(function initTheme() {
+    const saved = localStorage.getItem("theme") || "light";
+    document.documentElement.setAttribute("data-theme", saved);
+})();
+
+/* =====================
+   INPUT HANDLING
+===================== */
+function handleKeyPress(e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+    }
+}
+
+function askQuestion(q) {
+    userInput.value = q;
+    sendMessage();
+}
+
+/* =====================
+   USER MESSAGE
+===================== */
+function addUserMessage(text) {
+    const msg = document.createElement("div");
+    msg.className = "message";
+
+    const bubble = document.createElement("div");
+    bubble.className = "user-message";
+    bubble.textContent = text;
+
+    msg.appendChild(bubble);
+    chatMessages.appendChild(msg);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+/* =====================
+   FORMAT TEXT
+===================== */
+function formatExplanation(text) {
+    // Clean up noise
+    let cleaned = text
+        .replace(/📘\s*\*\*From.*?\*\*:/gi, "")
+        .replace(/📘\s*\*\*Definition.*?\*\*:/gi, "")
+        .replace(/📘\s*From.*?:/gi, "")
+        .replace(/Hands-On[_\w-]*/gi, "")
+        .replace(/👉.*$/gi, "")
+        .replace(/Check the video tutorials below.*$/gi, "")
+        .trim();
+    
+    // Split into sentences
+    const sentences = cleaned.match(/[^.!?]+[.!?]+/g) || [cleaned];
+    
+    // Group into paragraphs (3-4 sentences each)
+    const paragraphs = [];
+    for (let i = 0; i < sentences.length; i += 3) {
+        const para = sentences.slice(i, i + 3).join(' ').trim();
+        if (para && para.length > 20) {  // Ignore very short fragments
+            paragraphs.push(para);
+        }
+    }
+    
+    return paragraphs.length > 0 ? paragraphs : [cleaned];
+}
+
+/* =====================
+   BOT MESSAGE
+===================== */
+function addBotMessage(answer, sources) {
+    const msg = document.createElement("div");
+    msg.className = "message";
+
+    const bubble = document.createElement("div");
+    bubble.className = "bot-message";
+
+    /* ----- EXPLANATION ----- */
+    const title = document.createElement("h3");
+    title.innerHTML = "📘 Explanation";
+    bubble.appendChild(title);
+
+    const paragraphs = formatExplanation(answer);
+    
+    paragraphs.forEach(para => {
+        const p = document.createElement("p");
+        p.className = "explanation-paragraph";
+        p.textContent = para;
+        bubble.appendChild(p);
+    });
+
+    /* ----- VIDEOS ----- */
+    if (sources && sources.videos && sources.videos.length > 0) {
+        const s = document.createElement("div");
+        s.className = "sources";
+
+        const h4 = document.createElement("h4");
+        h4.innerHTML = "🎥 Video Tutorials";
+        s.appendChild(h4);
+
+        sources.videos.forEach((v, i) => {
+            const card = document.createElement("div");
+            card.className = "video-ref";
+            
+            // Clean title
+            const cleanTitle = v.title
+                .replace('.wav', '')
+                .replace(/^\d+[\s_-]*/, '')
+                .trim();
+            
+            card.innerHTML = `
+                <strong>${i + 1}. ${cleanTitle}</strong>
+                <span class="score">⭐ ${v.score}</span><br>
+                <a href="${v.url}" target="_blank" rel="noopener noreferrer">
+                    ▶️ Watch from <span class="timestamp">${v.timestamp}</span>
+                </a>
+            `;
+            s.appendChild(card);
+        });
+
+        bubble.appendChild(s);
+    }
+
+    msg.appendChild(bubble);
+    chatMessages.appendChild(msg);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+/* =====================
+   ERROR MESSAGE
+===================== */
+function addErrorMessage(errorText) {
+    const msg = document.createElement("div");
+    msg.className = "message";
+    
+    const bubble = document.createElement("div");
+    bubble.className = "bot-message error-message";
+    bubble.innerHTML = `<strong>⚠️ Error:</strong> ${errorText}`;
+    
+    msg.appendChild(bubble);
+    chatMessages.appendChild(msg);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+/* =====================
+   SEND MESSAGE
+===================== */
+async function sendMessage() {
+    const query = userInput.value.trim();
+    if (!query) return;
+
+    // Add user message
+    addUserMessage(query);
+    userInput.value = "";
+    userInput.disabled = true;
+
+    // Show typing indicator
+    typingIndicator.classList.add("active");
+
+    try {
+        const res = await fetch("/ask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query })
+        });
+
+        if (!res.ok) {
+            throw new Error(`Server error: ${res.status}`);
+        }
+
+        const data = await res.json();
+        
+        if (data.error) {
+            addErrorMessage(data.error);
+        } else {
+            addBotMessage(data.answer, data.sources);
+        }
+    } catch (error) {
+        console.error("Error:", error);
+        addErrorMessage("Failed to connect to server. Please check if the server is running.");
+    } finally {
+        typingIndicator.classList.remove("active");
+        userInput.disabled = false;
+        userInput.focus();
+    }
+}
+
+/* =====================
+   INIT
+===================== */
+window.onload = () => {
+    userInput.focus();
+};
+</script>
+</body>
+</html>
