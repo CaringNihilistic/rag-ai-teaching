@@ -51,9 +51,34 @@
 </div>
 
 <script>
-const chatMessages = document.getElementById("chatMessages");
-const userInput    = document.getElementById("userInput");
+const chatMessages    = document.getElementById("chatMessages");
+const userInput       = document.getElementById("userInput");
 const typingIndicator = document.getElementById("typingIndicator");
+
+/* =====================
+   SCROLL MANAGEMENT
+   - _autoScroll: true while user is at/near the bottom
+   - _rafPending: ensures we fire at most one scroll per animation frame
+     so we never trigger more than 60 layout reflows/s (vs one per token)
+===================== */
+let _autoScroll = true;
+let _rafPending = false;
+
+chatMessages.addEventListener("scroll", () => {
+    const distFromBottom =
+        chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight;
+    // Re-enable auto-scroll if user scrolls back to within 80px of the bottom
+    _autoScroll = distFromBottom < 80;
+}, { passive: true });
+
+function scrollToBottom() {
+    if (!_autoScroll || _rafPending) return;
+    _rafPending = true;
+    requestAnimationFrame(() => {
+        _rafPending = false;
+        if (_autoScroll) chatMessages.scrollTop = chatMessages.scrollHeight;
+    });
+}
 
 /* =====================
    THEME (PERSISTENT)
@@ -87,7 +112,7 @@ function addUserMessage(text) {
     bubble.textContent = text;
     msg.appendChild(bubble);
     chatMessages.appendChild(msg);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+    scrollToBottom();
 }
 
 /* =====================
@@ -164,7 +189,7 @@ function createStreamingBotMessage(sources) {
 
     msg.appendChild(bubble);
     chatMessages.appendChild(msg);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+    scrollToBottom();
     return { streamP, textContainer };
 }
 
@@ -195,7 +220,7 @@ function addErrorMessage(errorText) {
     bubble.innerHTML = `<strong>⚠️ Error:</strong> ${errorText}`;
     msg.appendChild(bubble);
     chatMessages.appendChild(msg);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+    scrollToBottom();
 }
 
 /* =====================
@@ -209,6 +234,7 @@ async function sendMessage() {
     userInput.value    = "";
     userInput.disabled = true;
     typingIndicator.classList.add("active");
+    _autoScroll = true;   // always scroll to show the new response
 
     let refs     = null;   // { streamP, textContainer }
     let fullText = "";
@@ -253,7 +279,7 @@ async function sendMessage() {
                     }
                     fullText += event.token;
                     refs.streamP.textContent = fullText;
-                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                    scrollToBottom();  // throttled via rAF — never more than 60 reflows/s
 
                 } else if (event.type === "done") {
                     if (refs && fullText) {

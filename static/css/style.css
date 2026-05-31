@@ -131,6 +131,17 @@ body {
 .message {
     margin-bottom: 24px;
     animation: fadeUp 0.3s ease;
+    /* Promote to its own compositing layer so growing content inside
+       doesn't force the parent scroll container to repaint on every token */
+    will-change: transform;
+    animation-fill-mode: forwards;
+}
+
+/* Streaming container must not inherit or retrigger any transform-based
+   animation — otherwise the browser repaints the whole scroll area on growth */
+.streaming-container {
+    animation: none;
+    will-change: contents;
 }
 
 @keyframes fadeUp {
