@@ -17,17 +17,18 @@
             <p>Machine Learning & Deep Learning Tutor</p>
         </div>
         <div class="header-actions">
-            <button class="new-chat-btn" id="newChatBtn" onclick="newChat()" title="Start a new conversation">
-                ✏️ New Chat
+            <button class="new-chat-btn" id="newChatBtn" onclick="newChat()"
+                    title="Start a new conversation" aria-label="Start a new conversation">
+                New Chat
             </button>
-            <button class="theme-toggle" onclick="toggleTheme()">🌙 / ☀️</button>
+            <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">🌙 / ☀️</button>
         </div>
     </header>
 
     <!-- CHAT -->
     <main class="chat-messages" id="chatMessages">
         <div class="example-questions">
-            <p>💡 Suggested Questions</p>
+            <p>Suggested Questions</p>
             <span onclick="askQuestion('What is overfitting in machine learning?')">What is overfitting?</span>
             <span onclick="askQuestion('How do CNNs work?')">How do CNNs work?</span>
             <span onclick="askQuestion('What is gradient descent?')">What is gradient descent?</span>
@@ -37,9 +38,10 @@
         </div>
     </main>
 
-    <!-- TYPING INDICATOR -->
+    <!-- TYPING INDICATOR + STOP -->
     <div class="typing-indicator" id="typingIndicator">
         <span></span><span></span><span></span>
+        <button class="stop-btn" id="stopBtn" onclick="stopGeneration()" aria-label="Stop generating">■ Stop</button>
     </div>
 
     <!-- INPUT -->
@@ -50,7 +52,7 @@
             placeholder="Ask about ML/DL concepts..."
             onkeypress="handleKeyPress(event)"
         >
-        <button class="send-button" onclick="sendMessage()">Send ✈️</button>
+        <button class="send-button" onclick="sendMessage()" aria-label="Send message">Send</button>
     </footer>
 
 </div>
@@ -59,6 +61,20 @@
 const chatMessages    = document.getElementById("chatMessages");
 const userInput       = document.getElementById("userInput");
 const typingIndicator = document.getElementById("typingIndicator");
+
+/* =====================
+   STOP GENERATION
+===================== */
+let _activeReader = null;
+const stopBtn = document.getElementById("stopBtn");
+
+function stopGeneration() {
+    if (_activeReader) {
+        _activeReader.cancel();
+        _activeReader = null;
+    }
+    stopBtn.classList.remove("visible");
+}
 
 /* =====================
    CONVERSATION HISTORY
@@ -72,7 +88,7 @@ function newChat() {
     conversationHistory = [];
     chatMessages.innerHTML = `
     <div class="example-questions">
-        <p>💡 Suggested Questions</p>
+        <p>Suggested Questions</p>
         <span onclick="askQuestion('What is overfitting in machine learning?')">What is overfitting?</span>
         <span onclick="askQuestion('How do CNNs work?')">How do CNNs work?</span>
         <span onclick="askQuestion('What is gradient descent?')">What is gradient descent?</span>
@@ -171,17 +187,18 @@ function buildSourcesDiv(sources) {
     const s  = document.createElement("div");
     s.className = "sources";
     const h4 = document.createElement("h4");
-    h4.innerHTML = "🎥 Video Tutorials";
+    h4.textContent = "Video Sources";
     s.appendChild(h4);
     sources.videos.forEach((v, i) => {
         const card = document.createElement("div");
         card.className = "video-ref";
         const cleanTitle = v.title.replace(".wav", "").replace(/^\d+[\s_-]*/, "").trim();
+        // Score intentionally omitted — cosine similarity numbers are meaningless to users
+        const tsLabel = v.timestamp === "0:00" ? "Watch full lecture" : `Watch from ${v.timestamp}`;
         card.innerHTML = `
-            <strong>${i + 1}. ${cleanTitle}</strong>
-            <span class="score">⭐ ${v.score}</span><br>
+            <strong>${i + 1}. ${cleanTitle}</strong><br>
             <a href="${v.url}" target="_blank" rel="noopener noreferrer">
-                ▶️ Watch from <span class="timestamp">${v.timestamp}</span>
+                ▶ ${tsLabel === "Watch full lecture" ? tsLabel : `Watch from <span class="timestamp">${v.timestamp}</span>`}
             </a>`;
         s.appendChild(card);
     });
@@ -200,7 +217,7 @@ function createStreamingBotMessage(sources) {
     bubble.className = "bot-message";
 
     const title = document.createElement("h3");
-    title.innerHTML = "📘 Explanation";
+    title.textContent = "Explanation";
     bubble.appendChild(title);
 
     const textContainer = document.createElement("div");
@@ -230,7 +247,8 @@ function finalizeBriefMessage(streamP, textContainer, bubble, fullText, query, h
     // Deep Dive button — inserted before the sources section
     const btn = document.createElement("button");
     btn.className = "deep-dive-btn";
-    btn.innerHTML = "📖 Deep Dive →";
+    btn.innerHTML = "Deep Dive →";
+    btn.title = "Get a full in-depth explanation (takes 30–60 seconds)";
     btn.onclick = () => expandAnswer(bubble, btn, query, historySnapshot);
 
     const sources = bubble.querySelector(".sources");
@@ -378,6 +396,8 @@ async function sendMessage() {
         }
 
         const reader  = response.body.getReader();
+        _activeReader = reader;
+        stopBtn.classList.add("visible");
         const decoder = new TextDecoder();
         let   buffer  = "";
 
@@ -436,8 +456,12 @@ async function sendMessage() {
     } catch (err) {
         console.error("Streaming error:", err);
         typingIndicator.classList.remove("active");
-        addErrorMessage("Failed to connect to server. Is the server running?");
+        if (err.name !== "AbortError") {
+            addErrorMessage("Failed to connect to server. Is the server running?");
+        }
     } finally {
+        _activeReader = null;
+        stopBtn.classList.remove("visible");
         typingIndicator.classList.remove("active");
         userInput.disabled = false;
         userInput.focus();
