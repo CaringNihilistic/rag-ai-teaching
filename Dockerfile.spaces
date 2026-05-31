@@ -16,6 +16,9 @@ COPY main.py evaluate.py ./
 COPY templates/ templates/
 COPY static/    static/
 
+# FAISS index + metadata (uploaded to Space repo via git-lfs)
+COPY models/ models/
+
 # HuggingFace Spaces uses port 7860
 # FAISS files are uploaded directly to the Space repo under models/
 ENV PORT=7860
