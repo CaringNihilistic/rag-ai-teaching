@@ -1,202 +1,172 @@
 # RAG Based AI Teaching Assistant
 
-Fully local, offline-capable intelligent tutoring system for Machine Learning and Deep Learning. Powered by FAISS vector search, Ollama (LLaMA 3.2), Whisper transcription, and a 13-stage data pipeline over 241 YouTube lectures + 2 ML textbooks.
+Production-grade RAG system deployed on HuggingFace Spaces. ML + Deep Learning tutor backed by 241 YouTube lectures + 2 textbooks.
+
+**Live URL:** https://huggingface.co/spaces/ayushthecaringnihilist/rag-ai-teaching
+
+---
 
 ## How to Run
 
-**Prerequisites — must be running before starting the app:**
+**Local (requires Ollama):**
 ```
-ollama serve                         # Ollama daemon on port 11434
-ollama pull llama3.2                 # LLM for answer generation
-ollama pull nomic-embed-text         # Embedding model (768-dim)
-```
-
-**Start the app (FastAPI — primary entry point):**
-```
-python main.py
-```
-Opens at http://127.0.0.1:5000 · API docs at http://127.0.0.1:5000/docs
-
-**Legacy Flask server (kept for reference, not actively maintained):**
-```
-python app.py
+ollama serve
+ollama pull llama3.2
+ollama pull nomic-embed-text
+python main.py          → http://127.0.0.1:5000
 ```
 
-**Run evaluation (requires Ollama + FAISS index):**
+**Cloud mode (Groq API, no Ollama):**
 ```
-python evaluate.py                   # all 10 test questions
-python evaluate.py --questions 3     # quick smoke test
-```
-Outputs `eval_results.json` and `eval_summary.md`.
-
-## Install Dependencies
-
-```
-pip install -r requirements.txt
+GROQ_API_KEY=your_key USE_LOCAL_EMBED=true python main.py
 ```
 
-The cross-encoder reranker model (`cross-encoder/ms-marco-MiniLM-L-6-v2`, ~22 MB) downloads automatically from HuggingFace on first startup.
+**Evaluation:**
+```
+python evaluate.py --questions 5    # ~7 min
+python evaluate.py                  # full 10 questions
+```
+
+---
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `main.py` | **Primary entry point.** FastAPI app — async endpoints, SSE streaming, Pydantic validation |
-| `app.py` | Legacy Flask app. Kept intact; do not delete (reference + fallback) |
-| `evaluate.py` | Offline RAG evaluation — Faithfulness, Answer Relevancy, Context Precision |
-| `templates/index.html` | Chat UI — vanilla JS, SSE streaming consumer, dark/light mode |
-| `static/css/style.css` | All styling including streaming cursor animation |
-| `BUGFIXES.md` | Documents the 9 critical bugs fixed and why |
-| `pipeline/` | 13-stage data ingestion pipeline (run once to build the knowledge base) |
+| `main.py` | FastAPI app — primary entry point |
+| `app.py` | Legacy Flask — keep, do not delete |
+| `evaluate.py` | RAGAS-style evaluation (Faithfulness, Answer Relevancy, Context Precision) |
+| `Dockerfile.spaces` | HuggingFace Spaces deployment (rename to Dockerfile when pushing to HF) |
+| `requirements-prod.txt` | Cloud deps — no Whisper/yt-dlp/pypdf |
+| `render.yaml` | Render.com config (standard plan, 2GB RAM) |
+| `deploy_to_hf.ps1` | One-click deploy script to HuggingFace |
+| `update_hf.ps1` | Push incremental updates to HuggingFace Space |
+| `BUGFIXES.md` | 9 critical bugs documented |
+| `INTERVIEW_PREP.md` | Interview Q&A for this project |
 
-## Generated Files (gitignored, required at runtime)
+---
 
-Both must exist in the project root before starting the app:
-- `faiss_with_titles.index` — FAISS `IndexFlatIP` vector index (preferred)
-- `faiss.index` — fallback if the above is missing
-- `faiss_metadata_clean.json` — parallel array of chunk metadata (text, title, source_url, timestamps)
+## Runtime Files (gitignored)
 
-`main.py` tries `faiss_with_titles.index` first, then falls back to `faiss.index`, then raises a clear `FileNotFoundError` with instructions.
+Located in `models/` subdirectory. `main.py` searches project root then `models/`.
+- `models/faiss_with_titles.index` — FAISS IndexFlatIP (7,592 vectors, 768-dim)
+- `models/faiss_metadata_clean.json` — parallel chunk metadata array
+
+In cloud: downloaded from S3 at startup if `S3_BUCKET` env var is set, OR included in HF Space repo via git-lfs.
+
+---
+
+## Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `GROQ_API_KEY` | — | If set, all LLM calls use Groq instead of Ollama |
+| `GROQ_MODEL` | `llama-3.1-8b-instant` | Groq model to use |
+| `USE_LOCAL_EMBED` | `false` | If `true`, use sentence-transformers instead of Ollama for embeddings |
+| `S3_BUCKET` | — | If set, downloads FAISS files from S3 at startup |
+| `PORT` | `5000` | Server port (Render/HF inject this automatically) |
+| `RENDER` | — | If set, binds to `0.0.0.0` instead of `127.0.0.1` |
+
+---
 
 ## Architecture
 
 ```
-Query
-  │
-  ▼
-search_hybrid()          keyword filter on titles + FAISS dot-product
-  │                      returns {videos: [...50], books: [...5]}
-  │
-  ├─► format_sources()   ──► SSE "sources" event (arrives ~200ms after query)
-  │
-  ▼
-search_enhanced()        multi-query: 3 LLM paraphrases, each embedded + searched
-  │                      HyDE: hypothetical answer embedded + searched
-  │                      all results deduplicated by max score
-  │
-  ▼
-rerank()                 cross-encoder/ms-marco-MiniLM-L-6-v2 reranks top-20 videos
-  │
-  ▼
-_build_context()         top-4 videos (300 chars each) + top-3 books (600 chars each)
-  │                      truncated at sentence boundary, max 3000 chars
-  ▼
-_build_prompt()          system prompt + context assembled
-  │
-  ▼
-Ollama llama3.2          stream=True → tokens yielded via SSE
-  │
-  ▼
-Frontend                 tokens appended to <p>, reformatted into paragraphs on "done"
+User Query
+    ↓
+search_hybrid()        keyword filter + FAISS dot-product  (~200ms)
+    ├──► format_sources() → SSE "sources" event
+    ↓
+search_enhanced()      multi-query (3 paraphrases) + HyDE (hypothetical doc)
+    ↓                  deduplicate by max score
+rerank()               cross-encoder/ms-marco-MiniLM-L-6-v2 on top-20
+    ↓
+_build_context()       top-4 video (300ch) + top-3 book (600ch) chunks, ≤3000ch
+    ↓
+_stream_llm()          Groq (cloud) OR Ollama (local) — yields tokens
+    ↓
+Frontend               SSE → markdown rendered on "done" event
 ```
+
+---
 
 ## API Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/` | Chat UI |
-| `POST` | `/ask` | Full answer in one JSON response |
-| `POST` | `/ask/stream` | SSE stream: `sources → tokens → done` |
-| `GET` | `/docs` | Auto-generated OpenAPI docs (FastAPI) |
+| Method | Path | Notes |
+|--------|------|-------|
+| `GET` | `/` | Serves `templates/index.html` as raw HTML |
+| `POST` | `/ask/brief` | Fast: no HyDE/multi-query/reranking, `num_predict:120`, ~5-8s |
+| `POST` | `/ask/stream` | Full pipeline SSE: `sources → tokens → done` |
+| `POST` | `/ask` | Non-streaming full answer |
+| `GET` | `/docs` | OpenAPI auto-docs |
 
-**Request body for `/ask` and `/ask/stream`:**
-```json
-{ "query": "How does backpropagation work?" }
-```
-Max 500 characters. Validated by Pydantic before any processing.
+Request body: `{"query": "...", "history": [{"role": "user/assistant", "content": "..."}]}`
 
-**SSE event format (`/ask/stream`):**
-```
-data: {"type": "sources", "sources": {"videos": [...]}}
-data: {"type": "token",   "token": "Backpropagation"}
-data: {"type": "token",   "token": " is..."}
-data: {"type": "done"}
-data: {"type": "error",   "message": "..."}   ← only on failure
-```
+History capped at last 3 turns (`_MAX_HISTORY_TURNS = 3`). Short follow-ups contextualized via `_contextualize_query()` before FAISS search.
 
-## Data Pipeline (run once to build the knowledge base)
+---
 
-Run these scripts in order from the `pipeline/` directory. Each stage takes the previous output as input.
+## Two-Stage Answer UX
 
-```
-Stage 1:  extract_video_urls.py          → video_urls.json
-Stage 2:  json_playlist_creater.py       → video_urls_combined.json
-Stage 3:  extract_audios.py              → data/chunks/playlist_ml/, playlist_dl/
-Stage 4:  extract_books.py               → data/chunks/books_ml/, books_dl/
-Stage 5:  diaganosing_metadata.py        → faiss_metadata_fixed.json
-Stage 6:  build_faiss_index.py           → faiss_rebuilt.index
-Stage 7:  save_video_embeddings.py       → models/video_embeddings.npy
-Stage 8:  merge_metadata.py              → faiss_metadata_complete.json
-Stage 9:  diagonositic_text_on_metadata.py  (validation, no output file)
-Stage 10: add_book_embeddings.py         → faiss_complete.index
-Stage 11: swap_the_index.py              → faiss.index
-Stage 12: rebuild_index_with_titles.py   → faiss_with_titles.index  (preferred)
-Stage 13: clean_metadata.py              → faiss_metadata_clean.json
-```
+`/ask/brief` → 2-3 sentence definition (~5s) → "Deep Dive →" button → `/ask/stream` (full pipeline, ~30-60s).
 
-Stage 3 requires CUDA (GPU). The pipeline supports checkpoint resume — safe to interrupt and re-run.
+Sources always appear in ~200ms from the initial `search_hybrid()` call. The `search_enhanced()` + HyDE runs AFTER sources are sent — no blank UI during the extra LLM calls.
 
-## Embedding + Index Details
+---
 
-- Model: `nomic-embed-text` via Ollama → 768-dimensional vectors
-- Index type: `faiss.IndexFlatIP` (inner product = cosine for L2-normalized vectors)
-- All embeddings pre-loaded into `_all_embeddings` numpy array at startup (~seconds, uses RAM)
-- Per-query search: `_all_embeddings[candidate_indices] @ q_flat` — one vectorized multiply, no per-chunk reconstruct calls
+## Retrieval Details
 
-## Retrieval Pipeline Details
+`search_hybrid()`: keyword filter on titles (acronym map: CNN→convolution, LSTM→long short) → batch numpy dot-product `_all_embeddings[indices] @ q_flat`.
 
-**search_hybrid** (fast, ~200ms):
-1. Extract keywords from query, filter stopwords
-2. Expand acronyms (CNN→convolution, LSTM→long short, etc.)
-3. Filter `video_indices` by keyword match in titles
-4. Embed query → batch dot-product with filtered videos + all books
-5. Returns top-50 videos + top-5 books by semantic score
+`search_enhanced()`: generates 3 query variants via `_llm_sync()`, generates 1 HyDE doc via `generate_hypothetical_doc()`, embeds all 4, deduplicates by `(source_url, start)` key.
 
-**search_enhanced** (runs after sources are sent to client):
-1. Call `generate_query_variants()` — LLM generates 3 paraphrases
-2. Embed each variant, search all videos + books
-3. Call `generate_hypothetical_doc()` — LLM writes a hypothetical textbook passage
-4. Embed that passage, search (HyDE technique)
-5. `_merge_results()` deduplicates by `(source_url, start)` key, keeps max score
+`rerank()`: cross-encoder logits ≠ cosine similarity scale. `format_sources()` always uses original semantic scores. Reranked order only affects `_build_context()` (LLM context quality).
 
-**rerank** (cross-encoder, ~200-400ms on CPU):
-- Takes top-20 videos + top-5 books from enhanced pool
-- `cross-encoder/ms-marco-MiniLM-L-6-v2` scores each (query, passage) pair
-- Reranked order is used for `_build_context`; original semantic scores used for `format_sources`
-- Graceful fallback if sentence-transformers not installed
+All embeddings pre-loaded into `_all_embeddings` numpy array at startup — no per-query `index.reconstruct()` calls.
 
-## Evaluation
+---
 
-`evaluate.py` implements the three reference-free RAGAS metrics natively via Ollama:
+## Evaluation Results
 
-| Metric | How it's measured |
-|--------|------------------|
-| **Faithfulness** | LLM extracts statements from answer; LLM judges each as supported/unsupported by context |
-| **Answer Relevancy** | LLM generates reverse questions from the answer; cosine sim with original question |
-| **Context Precision** | LLM judges each retrieved chunk as relevant/irrelevant; MAP-weighted average |
+| Metric | Score |
+|--------|-------|
+| Faithfulness | 0.773 |
+| Answer Relevancy | 0.773 |
+| Context Precision | 0.121 |
 
-Note: The `ragas` PyPI library (0.4.x) has a broken import against `langchain-community` 0.4.x. The native implementation above is used instead. See `requirements.txt` comment.
+Context Precision is intentionally low — broad retrieval pool + reranker is the design. Faithfulness and Answer Relevancy are what matter for final answer quality.
+
+---
+
+## Cloud Deployment (HuggingFace Spaces)
+
+- **Platform:** HuggingFace Spaces (free, CPU Basic, 16GB RAM)
+- **LLM:** Groq API (`GROQ_API_KEY` secret in Space settings)
+- **Embeddings:** sentence-transformers `nomic-ai/nomic-embed-text-v1.5`
+- **FAISS files:** uploaded to Space repo via `deploy_to_hf.ps1` (git-lfs)
+- **Dockerfile:** `Dockerfile.spaces` (renamed to `Dockerfile` in Space repo)
+
+To redeploy after changes: `powershell -ExecutionPolicy Bypass -File update_hf.ps1`
+
+---
 
 ## Known Gotchas
 
-- **Startup takes 10-30s** — all embeddings are loaded into RAM. Normal behaviour, not a hang.
-- **FAISS ops are blocking C++** — in `main.py` they run inside `asyncio.to_thread()`. Do not call them directly from async context.
-- **Reranker score scale ≠ semantic score scale** — cross-encoder logits (~−10 to +10) cannot be compared to cosine similarity scores (0 to 1). `format_sources` always uses the original semantic scores.
-- **HyDE adds latency** — 4 extra Ollama calls before LLM streaming starts. This happens *after* the `sources` SSE event, so the UI is not blank during this time.
-- **Pipeline typos** — `diaganosing_metadata.py` and `diagonositic_text_on_metadata.py` have typos in their filenames. Do not rename them without updating any scripts that reference them by name.
-- **`index.html` uses `/static/css/style.css`** — hardcoded path (not `url_for`). Works with both Flask and FastAPI. Do not revert to `url_for('static', filename=...)` — that is Flask-only syntax.
+- **numpy<2 required in cloud** — torch 2.2.0+cpu was compiled against NumPy 1.x; NumPy 2.x crashes it.
+- **einops required** — `nomic-ai/nomic-embed-text-v1.5` via sentence-transformers needs `einops`.
+- **sentence-transformers 2.7.0 pinned** — 3.x/5.x crash on Windows with transformers 5.9.x (tf-keras conflict).
+- **FAISS ops are blocking C++** — must call inside `asyncio.to_thread()` in async context.
+- **Reranker score ≠ semantic score** — do not mix cross-encoder logits with cosine similarities.
+- **HyDE latency is hidden** — runs after `sources` SSE event, so UI is never blank.
+- **`index.html` uses hardcoded `/static/css/style.css`** — works with both Flask and FastAPI. Never revert to `url_for()`.
+- **Pipeline typos** — `diaganosing_metadata.py` and `diagonositic_text_on_metadata.py` have typos. Do not rename.
 
-## Tech Stack
+---
 
-| Layer | Technology |
-|-------|-----------|
-| Web framework | FastAPI 0.115+ + uvicorn (async) |
-| Vector search | FAISS `IndexFlatIP` (faiss-cpu) |
-| LLM | LLaMA 3.2 via Ollama |
-| Embeddings | nomic-embed-text (768-dim) via Ollama |
-| Reranking | cross-encoder/ms-marco-MiniLM-L-6-v2 (sentence-transformers) |
-| Transcription | OpenAI Whisper `base` model on CUDA |
-| PDF extraction | pypdf |
-| Video download | yt-dlp |
-| Async HTTP | httpx (Ollama streaming in FastAPI) |
-| Frontend | Vanilla JS, SSE via `fetch` + `ReadableStream` |
+## Frontend (templates/index.html)
+
+Two-state layout: empty state (hero title centered, input 20vh from bottom) ↔ chat state (glass header, scrollable messages, input at bottom). Transition: 200ms fade+slide via inline style animation (double rAF trick for display change).
+
+Markdown rendered via `renderMarkdown()` — HTML-escaped first (XSS), then bold/italic/code/lists/headings applied. Streaming uses `.textContent`; markdown only applies on `done` event.
+
+Copy button appears on `.bot-bubble` hover. Stop button shows during streaming, cancels `_activeReader.cancel()`.

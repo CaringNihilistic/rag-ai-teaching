@@ -1,319 +1,212 @@
-# 🤖 RAG-Based AI Teaching Assistant
+# RAG-Based AI Teaching Assistant
 
-> A fully local, offline-capable intelligent tutoring system for
-> **Machine Learning & Deep Learning** — powered by Whisper, FAISS,
-> LLaMA 3.2, and a multi-stage advanced RAG pipeline.
+> A production-grade RAG system that acts as a personal AI tutor for Machine Learning and Deep Learning.
+> Ask any question, get a streamed, reranked, context-grounded explanation with YouTube timestamps.
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green)
 ![FAISS](https://img.shields.io/badge/FAISS-Vector%20Search-orange)
-![Ollama](https://img.shields.io/badge/Ollama-Local%20LLM-purple)
-![Whisper](https://img.shields.io/badge/Whisper-GPU%20Transcription-yellow)
+![Groq](https://img.shields.io/badge/Groq-LLM%20API-purple)
+![HuggingFace](https://img.shields.io/badge/HuggingFace-Deployed-yellow)
 ![Reranker](https://img.shields.io/badge/Reranker-Cross--Encoder-red)
 
----
-
-## 📌 Overview
-
-A production-grade RAG system that acts as a personal AI tutor for Machine Learning and Deep Learning. Ask any ML/DL question and get a streamed, reranked, context-grounded explanation with YouTube video links timestamped to the exact second.
-
-**Everything runs 100% locally — no OpenAI API, no cloud, no cost per query.**
-
-- 🎥 **241 YouTube lectures** fully transcribed via Whisper GPU
-- 📚 **2 authoritative textbooks** — 1,200+ pages chunked and indexed
-- ⚡ **Streaming responses** — first token in under a second
-- 🏆 **Cross-encoder reranking** — retrieves the most relevant chunks, not just the most similar
-- 🔀 **Multi-query + HyDE** — expands the query before retrieval for higher recall
-- 📊 **RAGAS-style evaluation** — measurable quality metrics, no ground truth needed
+**Live demo:** https://huggingface.co/spaces/ayushthecaringnihilist/rag-ai-teaching
 
 ---
 
-## 📊 Knowledge Base
+## What It Does
+
+- 🎥 **241 YouTube lectures** fully transcribed via Whisper GPU (Krish Naik ML + DL playlists)
+- 📚 **2 authoritative textbooks** — 1,230+ pages chunked and indexed
+- ⚡ **Streaming responses** — video sources appear in ~200ms, answer streams token-by-token
+- 🏆 **Cross-encoder reranking** — 22MB model re-scores top-20 candidates for accuracy
+- 🔀 **Multi-query + HyDE** — generates query paraphrases and hypothetical answers before retrieval
+- 🧠 **Multi-turn conversation memory** — follow-up questions reference prior turns
+- 📖 **Two-stage UX** — instant 2-sentence definition first, full Deep Dive on demand
+- 📊 **RAGAS evaluation** — Faithfulness 0.773 · Answer Relevancy 0.773
+
+---
+
+## Knowledge Base
 
 | Source | Count | Details |
 |--------|-------|---------|
-| 🎥 ML Videos | 153 | Krish Naik — Machine Learning playlist |
-| 🎥 DL Videos | 88 | Krish Naik — Deep Learning playlist |
-| 📘 Book 1 | ~650 pages | *Deep Learning* — Goodfellow, Bengio & Courville |
-| 📘 Book 2 | ~580 pages | *Hands-On ML with Scikit-Learn, Keras & TensorFlow* — Aurélien Géron |
-| **Total** | **241 videos + 1,230 pages** | Fully indexed in FAISS |
+| ML Videos | 153 | Krish Naik — Machine Learning playlist |
+| DL Videos | 88 | Krish Naik — Deep Learning playlist |
+| Book 1 | ~650 pages | *Deep Learning* — Goodfellow, Bengio & Courville |
+| Book 2 | ~580 pages | *Hands-On ML with Scikit-Learn, Keras & TensorFlow* — Aurélien Géron |
+| **Total** | **241 videos + 1,230 pages** | 7,592 chunks indexed in FAISS |
 
 ---
 
-## 🧠 Architecture
+## Architecture
 
 ```
 User Question
       │
       ▼
- search_hybrid()          Keyword filter on video titles
-      │                   + FAISS dot-product (batch numpy)
-      │                   → {videos: top-50, books: top-5}
+search_hybrid()        Keyword filter on video titles + FAISS dot-product (batch numpy)
+      │                → {videos: top-50, books: top-5}   ~200ms
       │
-      ├──► format_sources() ──► SSE "sources" event  ← arrives ~200ms after query
-      │
-      ▼
- search_enhanced()        Multi-query: LLM generates 3 paraphrases, each embedded + searched
-      │                   HyDE: LLM writes a hypothetical answer passage, embed + search
-      │                   All results deduplicated by max score
+      ├──► format_sources() ──► SSE "sources" event   ← user sees sources immediately
       │
       ▼
- rerank()                 cross-encoder/ms-marco-MiniLM-L-6-v2
-      │                   Re-scores top-20 candidates with a cross-encoder
-      │                   (much more accurate than dot-product alone)
+search_enhanced()      Multi-query: LLM generates 3 paraphrases, each embedded + searched
+      │                HyDE: LLM writes hypothetical answer, embed + search
+      │                All results deduplicated by max score
       │
       ▼
- _build_context()         Top-4 video chunks (300 chars) + top-3 book chunks (600 chars)
-      │                   Sentence-boundary truncation at 3,000 chars
+rerank()               cross-encoder/ms-marco-MiniLM-L-6-v2 re-scores top-20 candidates
+      │                (cross-encoder scores query+passage jointly — more accurate than dot-product)
       │
       ▼
- Ollama llama3.2          stream=True → tokens yielded one by one
+_build_context()       Top-4 video chunks (300 chars) + top-3 book chunks (600 chars)
+      │                Sentence-boundary truncation at 3,000 chars
       │
       ▼
- Browser                  Tokens streamed into live <p> tag, reformatted on completion
+_stream_llm()          Groq API (cloud) or Ollama (local) — streamed via SSE
+      │
+      ▼
+Browser                Tokens rendered with markdown, reformatted into paragraphs on done
 ```
 
 ---
 
-## ⚡ Advanced RAG Techniques
+## Advanced RAG Techniques
 
-### 1. Streaming Responses
-Answers stream token-by-token via **Server-Sent Events**. Sources appear within ~200ms (just FAISS lookup time) while the LLM is still generating. A blinking cursor shows the model is "typing."
+**1. Hybrid Search** — keyword filter runs first (zero embedding cost), narrows the candidate pool, then semantic dot-product scores the filtered set. Acronym expansion handles CNN→convolution, LSTM→long short, etc.
 
-### 2. Cross-Encoder Reranking
-After the initial dense retrieval (dot-product similarity), the top-20 candidates are passed through `cross-encoder/ms-marco-MiniLM-L-6-v2` — a 22MB model that scores each `(query, passage)` pair jointly. This is far more accurate than embedding similarity alone and typically improves answer quality significantly.
+**2. Cross-Encoder Reranking** — initial retrieval uses bi-encoder (fast but approximate). Top-20 candidates are re-scored by a cross-encoder that reads query+passage jointly. Bi-encoders compress each independently; cross-encoders see both together — fundamentally more accurate.
 
-### 3. Multi-Query Retrieval
-The LLM generates 3 different phrasings of the user's question. Each phrasing is embedded and searched independently. Results are merged by keeping the highest score for each unique chunk. This improves recall for questions where the phrasing matters for keyword matching.
+**3. HyDE (Hypothetical Document Embeddings)** — based on [Gao et al. 2022](https://arxiv.org/abs/2212.10496). Embed a hypothetical textbook answer instead of the raw question. Documents live in "answer space"; questions live in "question space." Bridging the gap improves retrieval recall.
 
-### 4. HyDE (Hypothetical Document Embeddings)
-Based on [Gao et al. 2022](https://arxiv.org/abs/2212.10496). Instead of embedding the question, the LLM first writes a hypothetical textbook passage that *would* answer it. That passage is embedded and used for retrieval. Since document embeddings live in "answer space" rather than "question space," this often retrieves more relevant chunks.
+**4. Multi-Query Retrieval** — LLM generates 3 paraphrases. Each is embedded and searched independently. Results merged by max score. Improves recall when exact phrasing misses relevant chunks.
 
-### 5. Hybrid Search
-Combines keyword filtering (matching query terms against video titles, with acronym expansion: CNN→convolution, LSTM→long short, etc.) with semantic vector search. The keyword filter runs first with zero embedding cost, narrowing the candidate pool before semantic scoring.
+**5. Two-Stage UX** — `/ask/brief` (fast, no HyDE/reranking, `num_predict:120`) returns a 2-3 sentence definition in ~5-8s. User clicks "Deep Dive →" to trigger `/ask/stream` (full pipeline). Eliminates 45-90s blank wait for simple questions.
+
+**6. Multi-Turn Conversation Memory** — last 3 turns injected into the LLM prompt. Short follow-up queries (< 8 words) are contextualized: "give me an example" + history "What is gradient descent?" → retrieval query becomes "What is gradient descent?. give me an example".
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 rag-ai-teaching/
-│
 ├── main.py                       ← FastAPI app — primary entry point
-├── app.py                        ← Flask app — legacy, kept for reference
-├── evaluate.py                   ← RAG quality evaluation script
-├── requirements.txt
+├── app.py                        ← Flask app — legacy reference
+├── evaluate.py                   ← RAGAS-style evaluation script
+├── Dockerfile.spaces             ← HuggingFace Spaces deployment
+├── requirements-prod.txt         ← Minimal cloud deps (no Whisper/yt-dlp)
+├── render.yaml                   ← Render.com deployment config
+├── BUGFIXES.md                   ← 9 critical bugs fixed + explanations
+├── INTERVIEW_PREP.md             ← Interview Q&A for this project
 ├── CLAUDE.md                     ← Project docs for Claude Code
-├── BUGFIXES.md                   ← 9 critical bugs fixed (documented)
 │
 ├── pipeline/                     ← Run once to build the knowledge base
-│   ├── extract_video_urls.py     [Stage 1]  Pull YouTube playlist URLs
-│   ├── json_playlist_creater.py  [Stage 2]  Standardise playlist JSON
-│   ├── extract_audios.py         [Stage 3]  Whisper GPU transcription
-│   ├── extract_books.py          [Stage 4]  Chunk PDF textbooks
-│   ├── diaganosing_metadata.py   [Stage 5]  Fuzzy-match video URLs
-│   ├── build_faiss_index.py      [Stage 6]  Generate embeddings + index
-│   ├── save_video_embeddings.py  [Stage 7]  Cache video embeddings
-│   ├── merge_metadata.py         [Stage 8]  Merge video + book metadata
-│   ├── diagonositic_text_on_metadata.py [Stage 9] Validate metadata
-│   ├── add_book_embeddings.py    [Stage 10] Add book vectors to index
-│   ├── swap_the_index.py         [Stage 11] Activate index
-│   └── rebuild_index_with_titles.py [Stage 12] Rebuild with title search
+│   ├── extract_video_urls.py     [Stage 1]
+│   ├── json_playlist_creater.py  [Stage 2]
+│   ├── extract_audios.py         [Stage 3]  GPU required
+│   ├── extract_books.py          [Stage 4]
+│   ├── diaganosing_metadata.py   [Stage 5]
+│   ├── build_faiss_index.py      [Stage 6]
+│   ├── save_video_embeddings.py  [Stage 7]
+│   ├── merge_metadata.py         [Stage 8]
+│   ├── add_book_embeddings.py    [Stage 10]
+│   ├── swap_the_index.py         [Stage 11]
+│   └── rebuild_index_with_titles.py [Stage 12]
 │
-├── templates/
-│   └── index.html                ← Chat UI (streaming SSE consumer)
-│
-├── static/css/
-│   └── style.css                 ← Styling + dark mode + streaming cursor
-│
-├── data/                         ← ⚠️ gitignored — regenerate via pipeline
-│   ├── audios/                   ← ML lecture audio files
-│   ├── audios_1/                 ← DL lecture audio files
-│   ├── Books/                    ← PDF textbooks
-│   └── chunks/                   ← Generated JSON transcript chunks
-│
-└── [project root — gitignored runtime files]
-    ├── faiss_with_titles.index   ← Primary FAISS index (Stage 12 output)
-    ├── faiss.index               ← Fallback index (Stage 11 output)
-    └── faiss_metadata_clean.json ← Chunk metadata array
+├── templates/index.html          ← Chat UI — SSE streaming, markdown, glassmorphism
+├── static/css/style.css          ← Moon background, glass bubbles, animations
+└── models/                       ← gitignored — FAISS index + metadata
 ```
 
 ---
 
-## 🚀 Setup & Installation
+## Running Locally
 
-### Prerequisites
-- Python 3.10+
-- NVIDIA GPU with CUDA (for Whisper transcription in the pipeline)
-- [Ollama](https://ollama.com) installed
+**Prerequisites:** Python 3.10+, Ollama running with `llama3.2` + `nomic-embed-text` pulled
 
-### 1. Clone the repo
 ```bash
-git clone https://github.com/YOUR_USERNAME/rag-ai-teaching.git
+git clone https://github.com/CaringNihilistic/rag-ai-teaching
 cd rag-ai-teaching
-```
-
-### 2. Install dependencies
-```bash
 pip install -r requirements.txt
-```
-
-The cross-encoder reranker model (~22 MB) downloads from HuggingFace automatically on first startup.
-
-### 3. Pull Ollama models
-```bash
-ollama pull nomic-embed-text   # embedding model
-ollama pull llama3.2           # LLM for answer generation
-```
-
-### 4. Add source data
-```
-data/audios/     ← ML lecture audio files (.wav / .mp3)
-data/audios_1/   ← DL lecture audio files
-data/Books/      ← PDF textbooks
-```
-
----
-
-## ⚙️ Running the Pipeline
-
-> Run once to build the full knowledge base. Whisper transcription takes several hours on first run; the pipeline supports checkpoint resume — safe to interrupt at any stage.
-
-```bash
-python pipeline/extract_video_urls.py
-python pipeline/json_playlist_creater.py
-python pipeline/extract_audios.py              # GPU required
-python pipeline/extract_books.py
-python pipeline/diaganosing_metadata.py
-python pipeline/build_faiss_index.py
-python pipeline/save_video_embeddings.py
-python pipeline/merge_metadata.py
-python pipeline/diagonositic_text_on_metadata.py
-python pipeline/add_book_embeddings.py
-python pipeline/swap_the_index.py
-python pipeline/rebuild_index_with_titles.py   # creates faiss_with_titles.index
-```
-
----
-
-## ▶️ Launch the App
-
-Make sure Ollama is running, then:
-
-```bash
 python main.py
 ```
 
-Opens automatically at **http://127.0.0.1:5000** · API docs at **http://127.0.0.1:5000/docs**
+Opens at **http://127.0.0.1:5000** · API docs at **http://127.0.0.1:5000/docs**
 
 ---
 
-## 📡 API Endpoints
+## API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/` | Chat UI |
-| `POST` | `/ask` | Full answer in a single JSON response |
-| `POST` | `/ask/stream` | Token-by-token SSE stream |
-| `GET` | `/docs` | Interactive OpenAPI documentation |
+| `POST` | `/ask/brief` | Fast path — 2-3 sentence definition, no HyDE/reranking (~5-8s) |
+| `POST` | `/ask/stream` | Full pipeline — token-by-token SSE stream |
+| `POST` | `/ask` | Non-streaming full answer (JSON) |
+| `GET` | `/docs` | OpenAPI docs |
 
 **Request body:**
 ```json
-{ "query": "How does backpropagation work?" }
+{ "query": "How does backpropagation work?", "history": [] }
 ```
 
-**SSE stream event sequence (`/ask/stream`):**
+**SSE event sequence:**
 ```
 data: {"type": "sources", "sources": {"videos": [...]}}   ← ~200ms
 data: {"type": "token",   "token": "Backpropagation"}
-data: {"type": "token",   "token": " is the algorithm..."}
-...
 data: {"type": "done"}
 ```
 
 ---
 
-## 📊 Evaluation
+## Evaluation Results
 
-Run the offline quality evaluation against 10 ML/DL test questions:
+| Metric | Score | What It Means |
+|--------|-------|---------------|
+| **Faithfulness** | **0.773** | 77% of LLM statements are grounded in retrieved context |
+| **Answer Relevancy** | **0.773** | Answers semantically address the question asked |
+| **Context Precision** | **0.121** | Retrieval pool is broad; reranker selects the best chunks for the LLM |
+
+> Implements [RAGAS paper](https://arxiv.org/abs/2309.15217) metrics natively via Ollama — no external API, no ground truth needed.
 
 ```bash
-python evaluate.py              # full run
-python evaluate.py --questions 3   # quick smoke test
-```
-
-Outputs `eval_results.json` and `eval_summary.md`.
-
-| Metric | Description |
-|--------|-------------|
-| **Faithfulness** | Fraction of answer statements grounded in retrieved context |
-| **Answer Relevancy** | Cosine similarity between question and reverse-generated questions from the answer |
-| **Context Precision** | Fraction of retrieved chunks judged relevant by the LLM |
-
-> Metrics follow the [RAGAS paper](https://arxiv.org/abs/2309.15217) definitions, implemented with local Ollama — no external API needed.
-
-**Results** *(5 questions, llama3.2, nomic-embed-text, RTX 3050)*:
-
-| Metric | Score | Interpretation |
-|--------|-------|----------------|
-| Faithfulness | **0.773** | 77% of answer statements grounded in retrieved context |
-| Answer Relevancy | **0.773** | Answers address the question with high semantic alignment |
-| Context Precision | **0.121** | Low — retrieved pool is broad; top chunks are relevant but many are noisy |
-
-> Context Precision is low because the retrieval pool (50 videos + 5 books) is large and many
-> chunks are tangentially related. The reranker mitigates this by ensuring the LLM only sees
-> the top-ranked chunks — Faithfulness and Answer Relevancy reflect that final quality.
-> Run `python evaluate.py` to regenerate with your own models.
-
----
-
-## 💡 Example Questions
-
-```
-"How does backpropagation work?"
-"What is the vanishing gradient problem and how do LSTMs solve it?"
-"Explain CNNs with a real-world example"
-"What is the difference between bagging and boosting?"
-"How does the attention mechanism in transformers work?"
-"What is overfitting and how do I fix it?"
-"Explain batch normalisation and why it helps training"
-"What is the bias-variance tradeoff?"
+python evaluate.py --questions 5   # quick run (~7 min)
+python evaluate.py                 # full 10 questions
 ```
 
 ---
 
-## 🛠️ Tech Stack
+## Deployment
 
-| Layer | Technology |
-|-------|-----------|
-| Web framework | FastAPI 0.115+ + uvicorn (async) |
-| Async HTTP | httpx (Ollama streaming) |
-| Vector search | FAISS `IndexFlatIP` (faiss-cpu) |
-| Embeddings | Ollama `nomic-embed-text` (768-dim) |
-| LLM | Ollama `llama3.2` |
-| Reranking | `cross-encoder/ms-marco-MiniLM-L-6-v2` (sentence-transformers) |
-| Transcription | OpenAI Whisper `base` — GPU (CUDA) |
-| PDF extraction | pypdf |
-| Video download | yt-dlp |
-| Frontend | Vanilla JS, SSE via `fetch` + `ReadableStream` |
-| Validation | Pydantic v2 |
+**Live:** https://huggingface.co/spaces/ayushthecaringnihilist/rag-ai-teaching (free, 16GB RAM)
+
+Cloud mode uses **Groq API** for LLM generation (free tier, ~300 tokens/sec) and **sentence-transformers** for embeddings — no Ollama required. Set `GROQ_API_KEY` as a Space secret.
 
 ---
 
-## ⚠️ Notes
+## Tech Stack
 
-- `data/` and the index files are **gitignored** — run the pipeline to regenerate after cloning
-- Whisper requires a **CUDA-capable GPU** (tested on RTX 3050 4GB)
-- Pipeline saves **checkpoints** automatically — safe to interrupt and resume
-- App **startup takes 10–30s** — all embeddings are pre-loaded into RAM (normal, not a hang)
-- **HyDE + multi-query add latency** to the enhanced retrieval pass, but this happens *after* sources are already on screen, so the UI is never blank
+| Layer | Local | Cloud |
+|-------|-------|-------|
+| Web framework | FastAPI + uvicorn | same |
+| LLM | Ollama llama3.2 | Groq API (llama-3.1-8b-instant) |
+| Embeddings | Ollama nomic-embed-text | sentence-transformers nomic-embed-text-v1.5 |
+| Vector search | FAISS IndexFlatIP | same |
+| Reranking | cross-encoder/ms-marco-MiniLM-L-6-v2 | same |
+| Async HTTP | httpx | same |
+| Frontend | Vanilla JS + SSE | same |
+| Transcription (pipeline) | OpenAI Whisper base (GPU) | — |
+| PDF extraction (pipeline) | pypdf | — |
+| Validation | Pydantic v2 | same |
 
 ---
 
-## 🙏 Credits
+## Credits
 
-- **[Krish Naik](https://www.youtube.com/@krishnaik06)** — ML & DL lecture playlists used as the primary video source
-- **Ian Goodfellow, Yoshua Bengio, Aaron Courville** — *Deep Learning*
-- **Aurélien Géron** — *Hands-On ML with Scikit-Learn, Keras & TensorFlow*
-- **RAGAS** — [Shahul Es et al. 2023](https://arxiv.org/abs/2309.15217) — evaluation metric definitions
-- **HyDE** — [Gao et al. 2022](https://arxiv.org/abs/2212.10496) — hypothetical document embeddings
+- **[Krish Naik](https://www.youtube.com/@krishnaik06)** — lecture source material
+- **Goodfellow, Bengio, Courville** — *Deep Learning*
+- **Aurélien Géron** — *Hands-On ML*
+- **RAGAS** — [Shahul Es et al. 2023](https://arxiv.org/abs/2309.15217)
+- **HyDE** — [Gao et al. 2022](https://arxiv.org/abs/2212.10496)
