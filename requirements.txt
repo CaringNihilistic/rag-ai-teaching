@@ -9,7 +9,7 @@ openai-whisper>=20231117
 torch>=2.0.0
 pypdf>=3.0.0
 yt-dlp>=2024.1.0
-sentence-transformers>=2.7.0
+sentence-transformers==2.7.0   # 3.x/5.x crash on Windows with transformers 5.9.x (tf-keras conflict)
 # Evaluation (evaluate.py) — uses local Ollama instead of RAGAS library
 # ragas 0.4.x has broken imports against langchain-community 0.4.x; native impl used instead
 # ragas==0.1.21  # uncomment if you want to try the library directly

@@ -12,6 +12,13 @@ Key improvements over Flask version:
   - Auto OpenAPI docs at http://127.0.0.1:5000/docs
 """
 
+import sys
+# Windows cp1252 console can't encode emojis — force UTF-8 for all print output
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import asyncio
 import json
 import os
@@ -24,10 +31,9 @@ import faiss
 import httpx
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
@@ -68,21 +74,32 @@ async def lifespan(app: FastAPI):
 
     print("🔄  Loading RAG system …")
 
-    # Resolve index file
+    # Resolve index file — check project root then models/ subdirectory
+    _search_dirs = [BASE_DIR, os.path.join(BASE_DIR, "models")]
+    index_file = None
     for fname in ("faiss_with_titles.index", "faiss.index"):
-        candidate = os.path.join(BASE_DIR, fname)
-        if os.path.exists(candidate):
-            index_file = candidate
+        for d in _search_dirs:
+            candidate = os.path.join(d, fname)
+            if os.path.exists(candidate):
+                index_file = candidate
+                break
+        if index_file:
             break
-    else:
+    if not index_file:
         raise FileNotFoundError(
-            f"\n❌  No FAISS index found in {BASE_DIR}\n"
+            f"\n❌  No FAISS index found in {BASE_DIR} or {BASE_DIR}/models\n"
             "Run the full pipeline first (stages 1-12)."
         )
 
-    metadata_file = os.path.join(BASE_DIR, "faiss_metadata_clean.json")
-    if not os.path.exists(metadata_file):
-        raise FileNotFoundError(f"\n❌  Metadata not found: {metadata_file}")
+    # Resolve metadata file — same search order
+    metadata_file = None
+    for d in _search_dirs:
+        candidate = os.path.join(d, "faiss_metadata_clean.json")
+        if os.path.exists(candidate):
+            metadata_file = candidate
+            break
+    if not metadata_file:
+        raise FileNotFoundError(f"\n❌  faiss_metadata_clean.json not found in {BASE_DIR} or models/")
 
     # These are blocking — run in a thread so the event loop stays free
     index    = await asyncio.to_thread(faiss.read_index, index_file)
@@ -125,7 +142,7 @@ app = FastAPI(
 )
 
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
-templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+_TEMPLATE_PATH = os.path.join(BASE_DIR, "templates", "index.html")
 
 # ---------------------------------------------------------------------------
 # REQUEST SCHEMA — Pydantic validates + documents automatically
@@ -439,9 +456,9 @@ def generate_answer_sync(query: str, results: dict) -> str:
 # ---------------------------------------------------------------------------
 # ROUTES
 # ---------------------------------------------------------------------------
-@app.get("/", include_in_schema=False)
-async def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+@app.get("/", include_in_schema=False, response_class=HTMLResponse)
+async def home():
+    return HTMLResponse(open(_TEMPLATE_PATH, encoding="utf-8").read())
 
 
 @app.post("/ask", summary="Get a complete answer (non-streaming)")

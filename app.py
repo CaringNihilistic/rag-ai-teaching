@@ -24,17 +24,29 @@ app = Flask(__name__)
 # =========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # Bug 1: was hardcoded absolute path
 
-# Bug 9: app.py loaded faiss_with_titles.index but swap_the_index.py outputs faiss.index
-# Try the titles-enhanced index first, then fall back to the standard pipeline output
-for _fname in ("faiss_with_titles.index", "faiss.index"):
-    _candidate = os.path.join(BASE_DIR, _fname)
-    if os.path.exists(_candidate):
-        FAISS_INDEX_FILE = _candidate
-        break
-else:
-    FAISS_INDEX_FILE = os.path.join(BASE_DIR, "faiss_with_titles.index")  # will give a clear error below
+# Try project root then models/ subdirectory for both index and metadata
+_search_dirs = [BASE_DIR, os.path.join(BASE_DIR, "models")]
 
-METADATA_FILE = os.path.join(BASE_DIR, "faiss_metadata_clean.json")
+FAISS_INDEX_FILE = None
+for _fname in ("faiss_with_titles.index", "faiss.index"):
+    for _d in _search_dirs:
+        _candidate = os.path.join(_d, _fname)
+        if os.path.exists(_candidate):
+            FAISS_INDEX_FILE = _candidate
+            break
+    if FAISS_INDEX_FILE:
+        break
+if not FAISS_INDEX_FILE:
+    FAISS_INDEX_FILE = os.path.join(BASE_DIR, "faiss_with_titles.index")  # triggers clear error below
+
+METADATA_FILE = None
+for _d in _search_dirs:
+    _candidate = os.path.join(_d, "faiss_metadata_clean.json")
+    if os.path.exists(_candidate):
+        METADATA_FILE = _candidate
+        break
+if not METADATA_FILE:
+    METADATA_FILE = os.path.join(BASE_DIR, "faiss_metadata_clean.json")  # triggers clear error below
 
 EMBED_MODEL = "nomic-embed-text"
 LLM_MODEL = "llama3.2"
