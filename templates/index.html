@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -8,111 +8,163 @@
 </head>
 
 <body>
-<div class="chat-container">
+<div class="page" id="page">
 
-    <!-- HEADER -->
-    <header class="chat-header">
-        <div>
-            <h1>🤖 AI Teaching Assistant</h1>
-            <p>Machine Learning & Deep Learning Tutor</p>
-        </div>
+    <!-- App header — hidden until first message -->
+    <header class="app-header" id="appHeader">
+        <div class="header-brand">AI Teaching Assistant</div>
         <div class="header-actions">
-            <button class="new-chat-btn" id="newChatBtn" onclick="newChat()"
-                    title="Start a new conversation" aria-label="Start a new conversation">
-                New Chat
-            </button>
-            <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">🌙 / ☀️</button>
+            <button class="hdr-btn" onclick="newChat()" aria-label="Start a new conversation">New Chat</button>
         </div>
     </header>
 
-    <!-- CHAT -->
-    <main class="chat-messages" id="chatMessages">
-        <div class="example-questions">
-            <p>Suggested Questions</p>
-            <span onclick="askQuestion('What is overfitting in machine learning?')">What is overfitting?</span>
-            <span onclick="askQuestion('How do CNNs work?')">How do CNNs work?</span>
-            <span onclick="askQuestion('What is gradient descent?')">What is gradient descent?</span>
-            <span onclick="askQuestion('Explain backpropagation')">Explain backpropagation</span>
-            <span onclick="askQuestion('What are RNNs?')">What are RNNs?</span>
-            <span onclick="askQuestion('What is an LSTM?')">What is an LSTM?</span>
+    <!-- Empty state — centered hero, shown before any messages -->
+    <div class="empty-state" id="emptyState">
+        <div class="hero-text">
+            <h1>AI Teaching Assistant</h1>
+            <p>Machine Learning &amp; Deep Learning Tutor — ask anything below.</p>
         </div>
-    </main>
-
-    <!-- TYPING INDICATOR + STOP -->
-    <div class="typing-indicator" id="typingIndicator">
-        <span></span><span></span><span></span>
-        <button class="stop-btn" id="stopBtn" onclick="stopGeneration()" aria-label="Stop generating">■ Stop</button>
     </div>
 
-    <!-- INPUT -->
-    <footer class="chat-input-container">
-        <input
-            id="userInput"
-            class="chat-input"
-            placeholder="Ask about ML/DL concepts..."
-            onkeypress="handleKeyPress(event)"
-        >
-        <button class="send-button" onclick="sendMessage()" aria-label="Send message">Send</button>
-    </footer>
+    <!-- Chat messages — hidden until first message -->
+    <main class="chat-messages" id="chatMessages"></main>
 
+    <!-- Typing indicator + stop -->
+    <div class="typing-indicator" id="typingIndicator">
+        <span></span><span></span><span></span>
+        <button class="stop-btn" id="stopBtn" onclick="stopGeneration()" aria-label="Stop generating">&#9632; Stop</button>
+    </div>
+
+    <!-- Input section — always at bottom -->
+    <div class="input-section" id="inputSection">
+
+        <!-- Glassmorphism input box -->
+        <div class="input-glass">
+            <textarea
+                id="userInput"
+                placeholder="Ask about ML/DL concepts..."
+                rows="1"
+                aria-label="Ask a question"
+            ></textarea>
+            <div class="input-footer-row">
+                <span class="input-hint">Shift+Enter for new line</span>
+                <button class="send-btn" id="sendBtn" disabled onclick="sendMessage()" aria-label="Send message">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 19V5M5 12l7-7 7 7"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+
+        <!-- Quick action pills — shown in empty state only -->
+        <div class="quick-actions" id="quickActions">
+            <button class="qa-btn" onclick="askQuestion('What is overfitting?')">What is overfitting?</button>
+            <button class="qa-btn" onclick="askQuestion('How do CNNs work?')">How do CNNs work?</button>
+            <button class="qa-btn" onclick="askQuestion('What is gradient descent?')">What is gradient descent?</button>
+            <button class="qa-btn" onclick="askQuestion('Explain backpropagation')">Explain backpropagation</button>
+            <button class="qa-btn" onclick="askQuestion('What are RNNs?')">What are RNNs?</button>
+            <button class="qa-btn" onclick="askQuestion('What is an LSTM?')">What is an LSTM?</button>
+        </div>
+
+    </div>
 </div>
 
 <script>
+/* ─────────────────────────────────────────────
+   ELEMENT REFS
+───────────────────────────────────────────── */
 const chatMessages    = document.getElementById("chatMessages");
 const userInput       = document.getElementById("userInput");
 const typingIndicator = document.getElementById("typingIndicator");
+const stopBtn         = document.getElementById("stopBtn");
+const sendBtn         = document.getElementById("sendBtn");
+const emptyState      = document.getElementById("emptyState");
+const appHeader       = document.getElementById("appHeader");
+const inputSection    = document.getElementById("inputSection");
+const quickActions    = document.getElementById("quickActions");
 
-/* =====================
+/* ─────────────────────────────────────────────
+   TEXTAREA AUTO-RESIZE
+───────────────────────────────────────────── */
+const MIN_H = 48, MAX_H = 150;
+
+function adjustInputHeight(reset) {
+    if (reset) { userInput.style.height = MIN_H + "px"; return; }
+    userInput.style.height = MIN_H + "px";
+    userInput.style.height = Math.min(userInput.scrollHeight, MAX_H) + "px";
+}
+
+userInput.addEventListener("input", () => {
+    sendBtn.disabled = !userInput.value.trim();
+    adjustInputHeight();
+});
+
+userInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+
+/* ─────────────────────────────────────────────
+   CHAT MODE TRANSITIONS
+   Empty state  ↔  Chat state
+───────────────────────────────────────────── */
+let _inChatMode = false;
+
+function enterChatMode() {
+    if (_inChatMode) return;
+    _inChatMode = true;
+    emptyState.style.display      = "none";
+    appHeader.style.display       = "flex";
+    chatMessages.classList.add("visible");
+    quickActions.style.display    = "none";
+    inputSection.classList.add("chat-mode");
+}
+
+function exitChatMode() {
+    _inChatMode = false;
+    emptyState.style.display      = "flex";
+    appHeader.style.display       = "none";
+    chatMessages.classList.remove("visible");
+    quickActions.style.display    = "flex";
+    inputSection.classList.remove("chat-mode");
+}
+
+/* ─────────────────────────────────────────────
    STOP GENERATION
-===================== */
+───────────────────────────────────────────── */
 let _activeReader = null;
-const stopBtn = document.getElementById("stopBtn");
 
 function stopGeneration() {
-    if (_activeReader) {
-        _activeReader.cancel();
-        _activeReader = null;
-    }
+    if (_activeReader) { _activeReader.cancel(); _activeReader = null; }
     stopBtn.classList.remove("visible");
 }
 
-/* =====================
+/* ─────────────────────────────────────────────
    CONVERSATION HISTORY
-   Kept client-side; sent with every request so the server can inject
-   the last N turns into the LLM prompt for follow-up questions.
-===================== */
-let conversationHistory = [];   // [{role:"user"|"assistant", content:"..."}]
-const MAX_HISTORY = 3;          // turns to keep (each turn = 1 user + 1 assistant)
+───────────────────────────────────────────── */
+let conversationHistory = [];
+const MAX_HISTORY = 3;
 
 function newChat() {
     conversationHistory = [];
-    chatMessages.innerHTML = `
-    <div class="example-questions">
-        <p>Suggested Questions</p>
-        <span onclick="askQuestion('What is overfitting in machine learning?')">What is overfitting?</span>
-        <span onclick="askQuestion('How do CNNs work?')">How do CNNs work?</span>
-        <span onclick="askQuestion('What is gradient descent?')">What is gradient descent?</span>
-        <span onclick="askQuestion('Explain backpropagation')">Explain backpropagation</span>
-        <span onclick="askQuestion('What are RNNs?')">What are RNNs?</span>
-        <span onclick="askQuestion('What is an LSTM?')">What is an LSTM?</span>
-    </div>`;
+    chatMessages.innerHTML = "";
+    exitChatMode();
+    userInput.value = "";
+    adjustInputHeight(true);
+    sendBtn.disabled = true;
     userInput.focus();
 }
 
-/* =====================
+function askQuestion(q) { userInput.value = q; sendBtn.disabled = false; sendMessage(); }
+
+/* ─────────────────────────────────────────────
    SCROLL MANAGEMENT
-   - _autoScroll: true while user is at/near the bottom
-   - _rafPending: ensures we fire at most one scroll per animation frame
-     so we never trigger more than 60 layout reflows/s (vs one per token)
-===================== */
-let _autoScroll = true;
-let _rafPending = false;
+───────────────────────────────────────────── */
+let _autoScroll = true, _rafPending = false;
 
 chatMessages.addEventListener("scroll", () => {
-    const distFromBottom =
-        chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight;
-    // Re-enable auto-scroll if user scrolls back to within 80px of the bottom
-    _autoScroll = distFromBottom < 80;
+    const d = chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight;
+    _autoScroll = d < 80;
 }, { passive: true });
 
 function scrollToBottom() {
@@ -124,53 +176,26 @@ function scrollToBottom() {
     });
 }
 
-/* =====================
-   THEME (PERSISTENT)
-===================== */
-function toggleTheme() {
-    const html = document.documentElement;
-    const next = html.getAttribute("data-theme") === "dark" ? "light" : "dark";
-    html.setAttribute("data-theme", next);
-    localStorage.setItem("theme", next);
-}
-(function initTheme() {
-    document.documentElement.setAttribute("data-theme", localStorage.getItem("theme") || "light");
-})();
-
-/* =====================
-   INPUT HANDLING
-===================== */
-function handleKeyPress(e) {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-}
-function askQuestion(q) { userInput.value = q; sendMessage(); }
-
-/* =====================
+/* ─────────────────────────────────────────────
    USER MESSAGE
-===================== */
+───────────────────────────────────────────── */
 function addUserMessage(text) {
-    const msg    = document.createElement("div");
-    msg.className = "message";
-    const bubble = document.createElement("div");
-    bubble.className = "user-message";
+    const msg    = document.createElement("div");  msg.className = "message";
+    const bubble = document.createElement("div");  bubble.className = "user-bubble";
     bubble.textContent = text;
     msg.appendChild(bubble);
     chatMessages.appendChild(msg);
     scrollToBottom();
 }
 
-/* =====================
-   FORMAT TEXT
-===================== */
+/* ─────────────────────────────────────────────
+   FORMAT EXPLANATION TEXT
+───────────────────────────────────────────── */
 function formatExplanation(text) {
     let cleaned = text
-        .replace(/📘\s*\*\*From.*?\*\*:/gi, "")
-        .replace(/📘\s*\*\*Definition.*?\*\*:/gi, "")
-        .replace(/📘\s*From.*?:/gi, "")
-        .replace(/Hands-On[_\w-]*/gi, "")
-        .replace(/👉.*$/gi, "")
-        .replace(/Check the video tutorials below.*$/gi, "")
-        .trim();
+        .replace(/📘\s*\*\*From.*?\*\*:/gi, "").replace(/📘\s*From.*?:/gi, "")
+        .replace(/Hands-On[_\w-]*/gi, "").replace(/👉.*$/gi, "")
+        .replace(/Check the video tutorials below.*$/gi, "").trim();
     const sentences  = cleaned.match(/[^.!?]+[.!?]+/g) || [cleaned];
     const paragraphs = [];
     for (let i = 0; i < sentences.length; i += 3) {
@@ -180,56 +205,41 @@ function formatExplanation(text) {
     return paragraphs.length > 0 ? paragraphs : [cleaned];
 }
 
-/* =====================
-   BUILD SOURCES DIV (shared)
-===================== */
+/* ─────────────────────────────────────────────
+   BUILD VIDEO SOURCES
+───────────────────────────────────────────── */
 function buildSourcesDiv(sources) {
-    const s  = document.createElement("div");
-    s.className = "sources";
-    const h4 = document.createElement("h4");
-    h4.textContent = "Video Sources";
+    const s  = document.createElement("div");   s.className = "sources";
+    const h4 = document.createElement("h4");    h4.textContent = "Video Sources";
     s.appendChild(h4);
     sources.videos.forEach((v, i) => {
-        const card = document.createElement("div");
-        card.className = "video-ref";
+        const card      = document.createElement("div"); card.className = "video-ref";
         const cleanTitle = v.title.replace(".wav", "").replace(/^\d+[\s_-]*/, "").trim();
-        // Score intentionally omitted — cosine similarity numbers are meaningless to users
-        const tsLabel = v.timestamp === "0:00" ? "Watch full lecture" : `Watch from ${v.timestamp}`;
-        card.innerHTML = `
-            <strong>${i + 1}. ${cleanTitle}</strong><br>
-            <a href="${v.url}" target="_blank" rel="noopener noreferrer">
-                ▶ ${tsLabel === "Watch full lecture" ? tsLabel : `Watch from <span class="timestamp">${v.timestamp}</span>`}
-            </a>`;
+        const tsLabel   = v.timestamp === "0:00" ? "Watch full lecture" : `Watch from <span class="timestamp">${v.timestamp}</span>`;
+        card.innerHTML = `<strong>${i + 1}. ${cleanTitle}</strong><br>
+            <a href="${v.url}" target="_blank" rel="noopener noreferrer">▶ ${tsLabel}</a>`;
         s.appendChild(card);
     });
     return s;
 }
 
-/* =====================
-   STREAMING BOT MESSAGE
-   Creates the shell immediately with sources pre-populated.
-   Returns refs so the caller can append tokens into streamP.
-===================== */
+/* ─────────────────────────────────────────────
+   STREAMING BOT MESSAGE SHELL
+───────────────────────────────────────────── */
 function createStreamingBotMessage(sources) {
-    const msg    = document.createElement("div");
-    msg.className = "message";
-    const bubble = document.createElement("div");
-    bubble.className = "bot-message";
+    const msg    = document.createElement("div");  msg.className = "message";
+    const bubble = document.createElement("div");  bubble.className = "bot-bubble";
 
-    const title = document.createElement("h3");
-    title.textContent = "Explanation";
-    bubble.appendChild(title);
+    const label = document.createElement("h3");   label.textContent = "Explanation";
+    bubble.appendChild(label);
 
-    const textContainer = document.createElement("div");
-    textContainer.className = "streaming-container";
-    const streamP = document.createElement("p");
-    streamP.className = "explanation-paragraph streaming-text";
+    const textContainer = document.createElement("div");  textContainer.className = "stream-wrap";
+    const streamP       = document.createElement("p");    streamP.className = "exp-p streaming-text";
     textContainer.appendChild(streamP);
     bubble.appendChild(textContainer);
 
-    if (sources && sources.videos && sources.videos.length > 0) {
+    if (sources && sources.videos && sources.videos.length > 0)
         bubble.appendChild(buildSourcesDiv(sources));
-    }
 
     msg.appendChild(bubble);
     chatMessages.appendChild(msg);
@@ -237,43 +247,38 @@ function createStreamingBotMessage(sources) {
     return { streamP, textContainer, bubble };
 }
 
-/* =====================
-   FINALIZE BRIEF — show definition + Deep Dive button
-===================== */
+/* ─────────────────────────────────────────────
+   FINALIZE BRIEF — definition + Deep Dive button
+───────────────────────────────────────────── */
 function finalizeBriefMessage(streamP, textContainer, bubble, fullText, query, historySnapshot) {
     streamP.classList.remove("streaming-text");
-    textContainer.innerHTML = `<p class="explanation-paragraph brief-text">${fullText.trim()}</p>`;
+    textContainer.innerHTML = `<p class="exp-p">${fullText.trim()}</p>`;
 
-    // Deep Dive button — inserted before the sources section
-    const btn = document.createElement("button");
+    const btn   = document.createElement("button");
     btn.className = "deep-dive-btn";
-    btn.innerHTML = "Deep Dive →";
-    btn.title = "Get a full in-depth explanation (takes 30–60 seconds)";
+    btn.textContent = "Deep Dive →";
+    btn.title   = "Full in-depth explanation (30–60 s)";
     btn.onclick = () => expandAnswer(bubble, btn, query, historySnapshot);
 
-    const sources = bubble.querySelector(".sources");
-    sources ? bubble.insertBefore(btn, sources) : bubble.appendChild(btn);
+    const srcEl = bubble.querySelector(".sources");
+    srcEl ? bubble.insertBefore(btn, srcEl) : bubble.appendChild(btn);
     scrollToBottom();
 }
 
-/* =====================
-   EXPAND — streams full answer into same bubble when Deep Dive clicked
-===================== */
+/* ─────────────────────────────────────────────
+   EXPAND — streams full answer into same bubble
+───────────────────────────────────────────── */
 async function expandAnswer(bubble, btn, query, history) {
     btn.remove();
 
-    // Expansion area — inserted before sources
-    const expContainer = document.createElement("div");
-    expContainer.className = "streaming-container expansion-container";
-    const divider = document.createElement("hr");
-    divider.className = "expansion-divider";
-    const expP = document.createElement("p");
-    expP.className = "explanation-paragraph streaming-text";
-    expContainer.appendChild(divider);
-    expContainer.appendChild(expP);
+    const expWrap = document.createElement("div");  expWrap.className = "stream-wrap";
+    const divider = document.createElement("hr");   divider.className = "exp-divider";
+    const expP    = document.createElement("p");    expP.className = "exp-p streaming-text";
+    expWrap.appendChild(divider);
+    expWrap.appendChild(expP);
 
-    const sources = bubble.querySelector(".sources");
-    sources ? bubble.insertBefore(expContainer, sources) : bubble.appendChild(expContainer);
+    const srcEl = bubble.querySelector(".sources");
+    srcEl ? bubble.insertBefore(expWrap, srcEl) : bubble.appendChild(expWrap);
     scrollToBottom();
 
     let fullText = "";
@@ -284,10 +289,8 @@ async function expandAnswer(bubble, btn, query, history) {
             body:    JSON.stringify({ query, history })
         });
         if (!response.ok) {
-            const e = await response.text().catch(() => "");
             expP.classList.remove("streaming-text");
-            expP.textContent = `⚠️ Error ${response.status}: ${e.slice(0, 150)}`;
-            return;
+            expP.textContent = "⚠️ Error " + response.status; return;
         }
 
         const reader  = response.body.getReader();
@@ -298,89 +301,68 @@ async function expandAnswer(bubble, btn, query, history) {
             const { done, value } = await reader.read();
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop();
+            const lines = buffer.split("\n"); buffer = lines.pop();
 
             for (const line of lines) {
                 if (!line.startsWith("data: ")) continue;
-                let event;
-                try { event = JSON.parse(line.slice(6)); } catch { continue; }
+                let ev; try { ev = JSON.parse(line.slice(6)); } catch { continue; }
 
-                if (event.type === "token") {
-                    fullText += event.token;
-                    expP.textContent = fullText;
-                    scrollToBottom();
-                } else if (event.type === "done" && fullText) {
-                    // Format full answer into paragraphs
+                if (ev.type === "token") {
+                    fullText += ev.token; expP.textContent = fullText; scrollToBottom();
+                } else if (ev.type === "done" && fullText) {
                     expP.classList.remove("streaming-text");
-                    const paragraphs = formatExplanation(fullText);
-                    expContainer.innerHTML = "";
-                    expContainer.appendChild(divider.cloneNode());
-                    paragraphs.forEach(para => {
-                        const p = document.createElement("p");
-                        p.className = "explanation-paragraph";
-                        p.textContent = para;
-                        expContainer.appendChild(p);
+                    const paras = formatExplanation(fullText);
+                    expWrap.innerHTML = "";
+                    expWrap.appendChild(divider.cloneNode());
+                    paras.forEach(para => {
+                        const p = document.createElement("p"); p.className = "exp-p";
+                        p.textContent = para; expWrap.appendChild(p);
                     });
                     scrollToBottom();
-                } else if (event.type === "error") {
-                    expP.classList.remove("streaming-text");
-                    expP.textContent = "⚠️ " + event.message;
+                } else if (ev.type === "error") {
+                    expP.classList.remove("streaming-text"); expP.textContent = "⚠️ " + ev.message;
                 }
-                // 'sources' event intentionally ignored — already shown
             }
         }
-    } catch (err) {
-        expP.classList.remove("streaming-text");
-        expP.textContent = "⚠️ Failed to load full explanation.";
-    }
+    } catch { expP.classList.remove("streaming-text"); expP.textContent = "⚠️ Failed to load."; }
 }
 
-/* =====================
-   FINALIZE after streaming done (used by expandAnswer paragraph rebuild)
-===================== */
 function finalizeStreamingMessage(streamP, textContainer, fullText) {
     streamP.classList.remove("streaming-text");
-    const paragraphs = formatExplanation(fullText);
+    const paras = formatExplanation(fullText);
     textContainer.innerHTML = "";
-    paragraphs.forEach(para => {
-        const p = document.createElement("p");
-        p.className = "explanation-paragraph";
-        p.textContent = para;
-        textContainer.appendChild(p);
+    paras.forEach(para => {
+        const p = document.createElement("p"); p.className = "exp-p";
+        p.textContent = para; textContainer.appendChild(p);
     });
 }
 
-/* =====================
+/* ─────────────────────────────────────────────
    ERROR MESSAGE
-===================== */
-function addErrorMessage(errorText) {
-    const msg    = document.createElement("div");
-    msg.className = "message";
-    const bubble = document.createElement("div");
-    bubble.className = "bot-message error-message";
-    bubble.innerHTML = `<strong>⚠️ Error:</strong> ${errorText}`;
-    msg.appendChild(bubble);
-    chatMessages.appendChild(msg);
-    scrollToBottom();
+───────────────────────────────────────────── */
+function addErrorMessage(text) {
+    const msg    = document.createElement("div");  msg.className = "message";
+    const bubble = document.createElement("div");  bubble.className = "bot-bubble error-bubble";
+    bubble.innerHTML = `<strong>Error:</strong> ${text}`;
+    msg.appendChild(bubble); chatMessages.appendChild(msg); scrollToBottom();
 }
 
-/* =====================
-   SEND MESSAGE — streaming via /ask/stream SSE
-===================== */
+/* ─────────────────────────────────────────────
+   SEND MESSAGE
+───────────────────────────────────────────── */
 async function sendMessage() {
     const query = userInput.value.trim();
     if (!query) return;
 
+    enterChatMode();
     addUserMessage(query);
-    userInput.value    = "";
-    userInput.disabled = true;
+    userInput.value  = "";
+    adjustInputHeight(true);
+    sendBtn.disabled = true;
     typingIndicator.classList.add("active");
     _autoScroll = true;
 
-    let refs     = null;
-    let fullText = "";
-
+    let refs = null, fullText = "";
     const historyPayload = conversationHistory.slice(-(MAX_HISTORY * 2));
 
     try {
@@ -391,8 +373,8 @@ async function sendMessage() {
         });
 
         if (!response.ok) {
-            const errBody = await response.text().catch(() => "");
-            throw new Error(`Server error ${response.status}: ${errBody.slice(0, 200)}`);
+            const err = await response.text().catch(() => "");
+            throw new Error(`Server error ${response.status}: ${err.slice(0, 200)}`);
         }
 
         const reader  = response.body.getReader();
@@ -405,60 +387,42 @@ async function sendMessage() {
             const { done, value } = await reader.read();
             if (done) break;
 
-            // Buffer incoming bytes — a single read() chunk may span multiple SSE events
             buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop();   // hold the last (possibly incomplete) line
+            const lines = buffer.split("\n"); buffer = lines.pop();
 
             for (const line of lines) {
                 if (!line.startsWith("data: ")) continue;
-                let event;
-                try { event = JSON.parse(line.slice(6)); } catch { continue; }
+                let ev; try { ev = JSON.parse(line.slice(6)); } catch { continue; }
 
-                if (event.type === "sources") {
-                    // Sources arrive first (~100ms); hide spinner, create message shell
+                if (ev.type === "sources") {
                     typingIndicator.classList.remove("active");
-                    refs = createStreamingBotMessage(event.sources);
+                    refs = createStreamingBotMessage(ev.sources);
 
-                } else if (event.type === "token") {
-                    if (!refs) {
-                        // Guard: sources event missing (shouldn't happen)
-                        typingIndicator.classList.remove("active");
-                        refs = createStreamingBotMessage({ videos: [] });
-                    }
-                    fullText += event.token;
+                } else if (ev.type === "token") {
+                    if (!refs) { typingIndicator.classList.remove("active"); refs = createStreamingBotMessage({ videos: [] }); }
+                    fullText += ev.token;
                     refs.streamP.textContent = fullText;
-                    scrollToBottom();  // throttled via rAF — never more than 60 reflows/s
+                    scrollToBottom();
 
-                } else if (event.type === "done") {
+                } else if (ev.type === "done") {
                     if (refs && fullText) {
-                        // Show definition + Deep Dive button (pass history snapshot for the button click)
-                        finalizeBriefMessage(refs.streamP, refs.textContainer, refs.bubble,
-                                             fullText, query, historyPayload);
+                        finalizeBriefMessage(refs.streamP, refs.textContainer, refs.bubble, fullText, query, historyPayload);
                         conversationHistory.push({ role: "user",      content: query });
-                        conversationHistory.push({ role: "assistant",  content: fullText.slice(0, 500) });
+                        conversationHistory.push({ role: "assistant", content: fullText.slice(0, 500) });
                     } else if (!refs) {
                         addErrorMessage("No response received. Is Ollama running?");
                     }
 
-                } else if (event.type === "error") {
+                } else if (ev.type === "error") {
                     typingIndicator.classList.remove("active");
-                    if (refs) {
-                        refs.streamP.classList.remove("streaming-text");
-                        refs.streamP.style.color = "var(--error, #dc2626)";
-                        refs.streamP.textContent = "⚠️ " + event.message;
-                    } else {
-                        addErrorMessage(event.message);
-                    }
+                    if (refs) { refs.streamP.classList.remove("streaming-text"); refs.streamP.textContent = "⚠️ " + ev.message; }
+                    else      { addErrorMessage(ev.message); }
                 }
             }
         }
     } catch (err) {
-        console.error("Streaming error:", err);
         typingIndicator.classList.remove("active");
-        if (err.name !== "AbortError") {
-            addErrorMessage("Failed to connect to server. Is the server running?");
-        }
+        if (err.name !== "AbortError") addErrorMessage("Failed to connect. Is the server running?");
     } finally {
         _activeReader = null;
         stopBtn.classList.remove("visible");
@@ -468,10 +432,7 @@ async function sendMessage() {
     }
 }
 
-/* =====================
-   INIT
-===================== */
-window.onload = () => userInput.focus();
+window.onload = () => { adjustInputHeight(true); userInput.focus(); };
 </script>
 </body>
 </html>
