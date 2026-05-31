@@ -105,6 +105,88 @@ userInput.addEventListener("keydown", (e) => {
 });
 
 /* ─────────────────────────────────────────────
+   MARKDOWN RENDERER
+   Converts LLM output to safe HTML.
+   HTML is escaped first (XSS prevention), then
+   markdown patterns are applied on top.
+───────────────────────────────────────────── */
+function renderMarkdown(raw) {
+    // 1. Escape HTML entities
+    let s = raw.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+    // 2. Fenced code blocks (before inline code)
+    s = s.replace(/```(?:[a-z]*)?\n?([\s\S]*?)```/g,
+        (_, c) => `<pre><code>${c.trim()}</code></pre>\n`);
+
+    // 3. Inline code
+    s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+
+    // 4. Bold + italic (order matters: *** before ** before *)
+    s = s.replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>");
+    s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/__(.+?)__/g,     "<strong>$1</strong>");
+    s = s.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+    s = s.replace(/_([^_\n]+)_/g,   "<em>$1</em>");
+
+    // 5. Line-by-line: headings and lists
+    const lines = s.split("\n");
+    const out   = [];
+    let listType = null;
+
+    const closeList = () => {
+        if (listType) { out.push(`</${listType}>`); listType = null; }
+    };
+
+    for (const line of lines) {
+        if      (/^### /.test(line)) { closeList(); out.push(`<h4>${line.slice(4)}</h4>`); }
+        else if (/^## /.test(line))  { closeList(); out.push(`<h3>${line.slice(3)}</h3>`); }
+        else if (/^# /.test(line))   { closeList(); out.push(`<h2>${line.slice(2)}</h2>`); }
+        else if (/^[-*+] /.test(line)) {
+            if (listType !== "ul") { closeList(); out.push("<ul>"); listType = "ul"; }
+            out.push(`<li>${line.replace(/^[-*+] /, "")}</li>`);
+        }
+        else if (/^\d+\. /.test(line)) {
+            if (listType !== "ol") { closeList(); out.push("<ol>"); listType = "ol"; }
+            out.push(`<li>${line.replace(/^\d+\. /, "")}</li>`);
+        }
+        else { closeList(); out.push(line); }
+    }
+    closeList();
+
+    // 6. Wrap non-block runs in <p>
+    return out.join("\n").split(/\n{2,}/).map(block => {
+        block = block.trim();
+        if (!block) return "";
+        if (/^<(h[2-4]|ul|ol|pre)/.test(block)) return block;
+        return `<p>${block.replace(/\n/g, "<br>")}</p>`;
+    }).filter(Boolean).join("\n");
+}
+
+/* ─────────────────────────────────────────────
+   COPY BUTTON
+   Appears on bot-bubble hover, copies raw answer text.
+───────────────────────────────────────────── */
+const _svgCopy  = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+const _svgCheck = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+
+function createCopyBtn(textToCopy) {
+    const btn = document.createElement("button");
+    btn.className = "copy-btn";
+    btn.title = "Copy answer";
+    btn.setAttribute("aria-label", "Copy answer to clipboard");
+    btn.innerHTML = _svgCopy;
+    btn.onclick = (e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(textToCopy).then(() => {
+            btn.innerHTML = _svgCheck;
+            btn.classList.add("copied");
+            setTimeout(() => { btn.innerHTML = _svgCopy; btn.classList.remove("copied"); }, 2000);
+        }).catch(() => {});
+    };
+    return btn;
+}
+
+/* ─────────────────────────────────────────────
    CHAT MODE TRANSITIONS
    Empty state  ↔  Chat state
 ───────────────────────────────────────────── */
@@ -113,19 +195,47 @@ let _inChatMode = false;
 function enterChatMode() {
     if (_inChatMode) return;
     _inChatMode = true;
-    emptyState.style.display      = "none";
-    appHeader.style.display       = "flex";
+
+    // Fade empty state up and out
+    emptyState.style.transition = "opacity 0.2s ease, transform 0.2s ease";
+    emptyState.style.opacity    = "0";
+    emptyState.style.transform  = "translateY(-10px)";
+    setTimeout(() => { emptyState.style.display = "none"; }, 200);
+
+    // Slide header down (double rAF triggers transition after display change)
+    appHeader.style.opacity   = "0";
+    appHeader.style.transform = "translateY(-10px)";
+    appHeader.style.transition = "none";
+    appHeader.style.display   = "flex";
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+        appHeader.style.transition = "opacity 0.2s ease 0.05s, transform 0.2s ease 0.05s";
+        appHeader.style.opacity    = "1";
+        appHeader.style.transform  = "translateY(0)";
+    }));
+
+    // Fade messages in
+    chatMessages.style.opacity    = "0";
+    chatMessages.style.transition = "none";
     chatMessages.classList.add("visible");
-    quickActions.style.display    = "none";
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+        chatMessages.style.transition = "opacity 0.25s ease 0.1s";
+        chatMessages.style.opacity    = "1";
+    }));
+
+    quickActions.style.display = "none";
     inputSection.classList.add("chat-mode");
 }
 
 function exitChatMode() {
     _inChatMode = false;
-    emptyState.style.display      = "flex";
-    appHeader.style.display       = "none";
+    emptyState.style.transition = "";
+    emptyState.style.opacity    = "1";
+    emptyState.style.transform  = "";
+    emptyState.style.display    = "flex";
+    appHeader.style.display     = "none";
+    chatMessages.style.opacity  = "1";
     chatMessages.classList.remove("visible");
-    quickActions.style.display    = "flex";
+    quickActions.style.display  = "flex";
     inputSection.classList.remove("chat-mode");
 }
 
@@ -252,7 +362,10 @@ function createStreamingBotMessage(sources) {
 ───────────────────────────────────────────── */
 function finalizeBriefMessage(streamP, textContainer, bubble, fullText, query, historySnapshot) {
     streamP.classList.remove("streaming-text");
-    textContainer.innerHTML = `<p class="exp-p">${fullText.trim()}</p>`;
+    textContainer.innerHTML = renderMarkdown(fullText.trim());
+
+    // Copy button — appears on bubble hover, copies raw text
+    bubble.appendChild(createCopyBtn(fullText.trim()));
 
     const btn   = document.createElement("button");
     btn.className = "deep-dive-btn";
@@ -311,13 +424,10 @@ async function expandAnswer(bubble, btn, query, history) {
                     fullText += ev.token; expP.textContent = fullText; scrollToBottom();
                 } else if (ev.type === "done" && fullText) {
                     expP.classList.remove("streaming-text");
-                    const paras = formatExplanation(fullText);
                     expWrap.innerHTML = "";
-                    expWrap.appendChild(divider.cloneNode());
-                    paras.forEach(para => {
-                        const p = document.createElement("p"); p.className = "exp-p";
-                        p.textContent = para; expWrap.appendChild(p);
-                    });
+                    const d2 = document.createElement("hr"); d2.className = "exp-divider";
+                    expWrap.appendChild(d2);
+                    expWrap.insertAdjacentHTML("beforeend", renderMarkdown(fullText.trim()));
                     scrollToBottom();
                 } else if (ev.type === "error") {
                     expP.classList.remove("streaming-text"); expP.textContent = "⚠️ " + ev.message;
@@ -329,12 +439,7 @@ async function expandAnswer(bubble, btn, query, history) {
 
 function finalizeStreamingMessage(streamP, textContainer, fullText) {
     streamP.classList.remove("streaming-text");
-    const paras = formatExplanation(fullText);
-    textContainer.innerHTML = "";
-    paras.forEach(para => {
-        const p = document.createElement("p"); p.className = "exp-p";
-        p.textContent = para; textContainer.appendChild(p);
-    });
+    textContainer.innerHTML = renderMarkdown(fullText.trim());
 }
 
 /* ─────────────────────────────────────────────

@@ -149,6 +149,7 @@ body {
     border-radius: 4px 20px 20px 20px;
     padding: 20px;
     color: #e2e8f0;
+    position: relative;   /* anchor for copy button */
 }
 
 .bot-bubble h3 {
@@ -172,14 +173,81 @@ body {
     margin-bottom: 12px;
 }
 
-.exp-p {
-    font-size: 15px;
-    line-height: 1.75;
-    color: #e2e8f0;
-    margin-bottom: 14px;
-    max-width: 70ch;
+/* .exp-p — styling now handled by .bot-bubble p */
+
+/* ─────────────────────────────────────────────
+   COPY BUTTON
+───────────────────────────────────────────── */
+.copy-btn {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.25);
+    cursor: pointer;
+    padding: 5px;
+    border-radius: 6px;
+    line-height: 0;
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s, background 0.15s;
 }
-.exp-p:last-of-type { margin-bottom: 0; }
+.bot-bubble:hover .copy-btn { opacity: 1; }
+.copy-btn:hover               { color: #e2e8f0; background: rgba(255,255,255,0.08); }
+.copy-btn.copied              { color: #4ade80; }   /* green on success */
+
+/* ─────────────────────────────────────────────
+   MARKDOWN ELEMENTS inside bot bubbles
+───────────────────────────────────────────── */
+.bot-bubble strong { font-weight: 700; color: #f1f5f9; }
+.bot-bubble em     { font-style: italic; color: #cbd5e1; }
+
+.bot-bubble code {
+    background: rgba(255, 255, 255, 0.1);
+    color: #c7d2fe;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+    font-size: 13px;
+}
+
+.bot-bubble pre {
+    background: rgba(0, 0, 0, 0.45);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    margin: 14px 0;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.15) transparent;
+}
+.bot-bubble pre code {
+    background: none;
+    padding: 0;
+    color: #e2e8f0;
+    font-size: 13px;
+}
+
+.bot-bubble ul,
+.bot-bubble ol  {
+    padding-left: 22px;
+    margin: 10px 0;
+}
+.bot-bubble li {
+    margin-bottom: 6px;
+    line-height: 1.65;
+    color: #e2e8f0;
+}
+.bot-bubble li::marker { color: #6366f1; }   /* indigo bullets */
+
+.bot-bubble h2 { font-size: 17px; font-weight: 700; color: #f1f5f9; margin: 18px 0 8px; }
+.bot-bubble h3 { font-size: 15px; font-weight: 700; color: #f1f5f9; margin: 14px 0 6px; }
+.bot-bubble h4 { font-size: 13px; font-weight: 700; color: #94a3b8; margin: 12px 0 4px;
+                 text-transform: uppercase; letter-spacing: 0.06em; }
+
+.bot-bubble p  { font-size: 15px; line-height: 1.75; color: #e2e8f0;
+                 margin-bottom: 14px; max-width: 70ch; }
+.bot-bubble p:last-child { margin-bottom: 0; }
 
 /* Error bubble */
 .error-bubble {
