@@ -1,0 +1,25 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# CPU-only PyTorch — saves ~1.5 GB vs the CUDA wheel
+RUN pip install --no-cache-dir \
+    torch==2.2.0+cpu \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# App dependencies
+COPY requirements-prod.txt .
+RUN pip install --no-cache-dir -r requirements-prod.txt
+
+# Source code + static assets
+COPY main.py evaluate.py ./
+COPY templates/ templates/
+COPY static/    static/
+
+# HuggingFace Spaces uses port 7860
+# FAISS files are uploaded directly to the Space repo under models/
+ENV PORT=7860
+ENV USE_LOCAL_EMBED=true
+EXPOSE 7860
+
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port 7860"]
