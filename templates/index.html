@@ -16,7 +16,12 @@
             <h1>🤖 AI Teaching Assistant</h1>
             <p>Machine Learning & Deep Learning Tutor</p>
         </div>
-        <button class="theme-toggle" onclick="toggleTheme()">🌙 / ☀️</button>
+        <div class="header-actions">
+            <button class="new-chat-btn" id="newChatBtn" onclick="newChat()" title="Start a new conversation">
+                ✏️ New Chat
+            </button>
+            <button class="theme-toggle" onclick="toggleTheme()">🌙 / ☀️</button>
+        </div>
     </header>
 
     <!-- CHAT -->
@@ -54,6 +59,29 @@
 const chatMessages    = document.getElementById("chatMessages");
 const userInput       = document.getElementById("userInput");
 const typingIndicator = document.getElementById("typingIndicator");
+
+/* =====================
+   CONVERSATION HISTORY
+   Kept client-side; sent with every request so the server can inject
+   the last N turns into the LLM prompt for follow-up questions.
+===================== */
+let conversationHistory = [];   // [{role:"user"|"assistant", content:"..."}]
+const MAX_HISTORY = 3;          // turns to keep (each turn = 1 user + 1 assistant)
+
+function newChat() {
+    conversationHistory = [];
+    chatMessages.innerHTML = `
+    <div class="example-questions">
+        <p>💡 Suggested Questions</p>
+        <span onclick="askQuestion('What is overfitting in machine learning?')">What is overfitting?</span>
+        <span onclick="askQuestion('How do CNNs work?')">How do CNNs work?</span>
+        <span onclick="askQuestion('What is gradient descent?')">What is gradient descent?</span>
+        <span onclick="askQuestion('Explain backpropagation')">Explain backpropagation</span>
+        <span onclick="askQuestion('What are RNNs?')">What are RNNs?</span>
+        <span onclick="askQuestion('What is an LSTM?')">What is an LSTM?</span>
+    </div>`;
+    userInput.focus();
+}
 
 /* =====================
    SCROLL MANAGEMENT
@@ -234,16 +262,19 @@ async function sendMessage() {
     userInput.value    = "";
     userInput.disabled = true;
     typingIndicator.classList.add("active");
-    _autoScroll = true;   // always scroll to show the new response
+    _autoScroll = true;
 
-    let refs     = null;   // { streamP, textContainer }
+    let refs     = null;
     let fullText = "";
+
+    // Trim history to last MAX_HISTORY turns before sending
+    const historyPayload = conversationHistory.slice(-(MAX_HISTORY * 2));
 
     try {
         const response = await fetch("/ask/stream", {
             method:  "POST",
             headers: { "Content-Type": "application/json" },
-            body:    JSON.stringify({ query })
+            body:    JSON.stringify({ query, history: historyPayload })
         });
 
         if (!response.ok) throw new Error(`Server error: ${response.status}`);
@@ -284,6 +315,9 @@ async function sendMessage() {
                 } else if (event.type === "done") {
                     if (refs && fullText) {
                         finalizeStreamingMessage(refs.streamP, refs.textContainer, fullText);
+                        // Save turn to history so next question has context
+                        conversationHistory.push({ role: "user",      content: query    });
+                        conversationHistory.push({ role: "assistant",  content: fullText });
                     } else if (!refs) {
                         addErrorMessage("No response received. Is Ollama running?");
                     }

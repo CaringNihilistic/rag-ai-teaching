@@ -84,7 +84,14 @@ body {
     font-weight: 400;
 }
 
-.theme-toggle {
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.theme-toggle,
+.new-chat-btn {
     background: rgba(255, 255, 255, 0.25);
     border: none;
     padding: 10px 16px;
@@ -94,9 +101,16 @@ body {
     font-size: 16px;
     transition: all 0.2s ease;
     backdrop-filter: blur(10px);
+    white-space: nowrap;
 }
 
-.theme-toggle:hover {
+.new-chat-btn {
+    font-size: 14px;
+    padding: 10px 14px;
+}
+
+.theme-toggle:hover,
+.new-chat-btn:hover {
     background: rgba(255, 255, 255, 0.35);
     transform: scale(1.05);
 }

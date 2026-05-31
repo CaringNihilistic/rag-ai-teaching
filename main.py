@@ -147,9 +147,18 @@ _TEMPLATE_PATH = os.path.join(BASE_DIR, "templates", "index.html")
 # ---------------------------------------------------------------------------
 # REQUEST SCHEMA — Pydantic validates + documents automatically
 # ---------------------------------------------------------------------------
+_MAX_HISTORY_TURNS = 3   # how many past Q&A pairs to keep in the prompt
+
+class HistoryMessage(BaseModel):
+    role:    str = Field(..., pattern="^(user|assistant)$")
+    content: str = Field(..., max_length=2000)
+
 class QueryRequest(BaseModel):
-    query: str = Field(..., min_length=1, max_length=500,
-                       description="Question about ML or Deep Learning (max 500 chars)")
+    query:   str               = Field(..., min_length=1, max_length=500,
+                                       description="Question about ML or Deep Learning (max 500 chars)")
+    history: list[HistoryMessage] = Field(default_factory=list,
+                                          max_length=_MAX_HISTORY_TURNS * 2,
+                                          description="Last N conversation turns (user + assistant alternating)")
 
 # ---------------------------------------------------------------------------
 # HELPERS (synchronous — called inside asyncio.to_thread where needed)
@@ -173,6 +182,24 @@ def embed_query(text: str) -> np.ndarray:
     emb = np.array(r.json()["embedding"], dtype="float32")
     faiss.normalize_L2(emb.reshape(1, -1))
     return emb
+
+
+def _contextualize_query(query: str, history: list) -> str:
+    """
+    For short follow-up queries (< 8 words), prepend the last user question
+    so retrieval has enough context to find relevant chunks.
+    e.g. history='What is gradient descent?', query='give me an example'
+         → 'What is gradient descent? give me an example'
+    """
+    if not history or len(query.split()) >= 8:
+        return query
+    last_user = next(
+        (m.content if hasattr(m, "content") else m.get("content", "")
+         for m in reversed(history)
+         if (m.role if hasattr(m, "role") else m.get("role")) == "user"),
+        None,
+    )
+    return f"{last_user[:120]}. {query}" if last_user else query
 
 
 def extract_keywords(query: str) -> list[str]:
@@ -383,9 +410,30 @@ def _build_context(results: dict) -> tuple[str, list, list]:
     return ctx, book_texts, video_texts
 
 
-def _build_prompt(query: str, context: str) -> str:
-    return f"""You are an expert AI tutor for Machine Learning and Deep Learning.
+def _build_prompt(query: str, context: str, history: list | None = None) -> str:
+    # Build conversation history block (last _MAX_HISTORY_TURNS turns, answers capped at 300 chars)
+    history_block = ""
+    if history:
+        recent = history[-(2 * _MAX_HISTORY_TURNS):]
+        lines  = []
+        for msg in recent:
+            role    = msg.role    if hasattr(msg, "role")    else msg.get("role", "user")
+            content = msg.content if hasattr(msg, "content") else msg.get("content", "")
+            label   = "Student" if role == "user" else "Tutor"
+            lines.append(f"{label}: {content[:300]}")
+        history_block = (
+            "You are continuing an ongoing conversation. "
+            "Use the history below so follow-up questions make sense.\n\n"
+            "Conversation so far:\n" + "\n\n".join(lines) + "\n\n"
+        )
 
+    follow_up_note = (
+        "- This may be a follow-up — build naturally on the conversation history above\n"
+        if history else ""
+    )
+
+    return f"""You are an expert AI tutor for Machine Learning and Deep Learning.
+{history_block}
 A student asked: "{query}"
 
 Using the sources below, write a thorough and complete explanation:
@@ -396,7 +444,7 @@ Using the sources below, write a thorough and complete explanation:
 - Do NOT use markdown symbols like **, ##, or __
 - Do NOT include labels like [BOOK] or [VIDEO] in your answer
 - Write in plain clear English as if teaching a university student
-
+{follow_up_note}
 Sources:
 {context}
 
@@ -424,10 +472,10 @@ def format_sources(results: dict) -> dict:
     return {"videos": videos}
 
 
-def generate_answer_sync(query: str, results: dict) -> str:
+def generate_answer_sync(query: str, results: dict, history: list | None = None) -> str:
     import requests as _req
     ctx, book_texts, video_texts = _build_context(results)
-    prompt = _build_prompt(query, ctx)
+    prompt = _build_prompt(query, ctx, history)
     try:
         r = _req.post(
             OLLAMA_CHAT,
@@ -464,11 +512,12 @@ async def home():
 @app.post("/ask", summary="Get a complete answer (non-streaming)")
 async def ask(req: QueryRequest):
     """Returns the full answer + source links in one response."""
-    results  = await asyncio.to_thread(search_hybrid, req.query)
-    enhanced = await asyncio.to_thread(search_enhanced, req.query, results)  # multi-query + HyDE
-    reranked = await asyncio.to_thread(rerank, req.query, enhanced)
-    answer   = await asyncio.to_thread(generate_answer_sync, req.query, reranked)
-    sources  = format_sources(results)   # original scores for source links
+    search_q = _contextualize_query(req.query, req.history)
+    results  = await asyncio.to_thread(search_hybrid, search_q)
+    enhanced = await asyncio.to_thread(search_enhanced, search_q, results)
+    reranked = await asyncio.to_thread(rerank, search_q, enhanced)
+    answer   = await asyncio.to_thread(generate_answer_sync, req.query, reranked, req.history)
+    sources  = format_sources(results)
     return {"answer": answer, "sources": sources}
 
 
@@ -480,17 +529,19 @@ async def ask_stream(req: QueryRequest):
     """
     async def generate():
         try:
-            # Fast path: original hybrid search → send sources immediately (~200ms)
-            results  = await asyncio.to_thread(search_hybrid, req.query)
+            # Contextualize short follow-up queries before retrieval
+            search_q = _contextualize_query(req.query, req.history)
+
+            # Fast path: send sources immediately (~200ms)
+            results  = await asyncio.to_thread(search_hybrid, search_q)
             sources  = format_sources(results)
             yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
 
-            # Enhanced path: multi-query + HyDE runs AFTER sources are on screen
-            # so the extra LLM calls don't delay the UI response
-            enhanced      = await asyncio.to_thread(search_enhanced, req.query, results)
-            reranked      = await asyncio.to_thread(rerank, req.query, enhanced)
+            # Enhanced retrieval + rerank (runs after sources are on screen)
+            enhanced      = await asyncio.to_thread(search_enhanced, search_q, results)
+            reranked      = await asyncio.to_thread(rerank, search_q, enhanced)
             context, _, _ = _build_context(reranked)
-            prompt        = _build_prompt(req.query, context)
+            prompt        = _build_prompt(req.query, context, req.history)
 
             # Async HTTP to Ollama — doesn't block the event loop
             async with httpx.AsyncClient() as client:
