@@ -277,7 +277,10 @@ async function sendMessage() {
             body:    JSON.stringify({ query, history: historyPayload })
         });
 
-        if (!response.ok) throw new Error(`Server error: ${response.status}`);
+        if (!response.ok) {
+            const errBody = await response.text().catch(() => "");
+            throw new Error(`Server error ${response.status}: ${errBody.slice(0, 200)}`);
+        }
 
         const reader  = response.body.getReader();
         const decoder = new TextDecoder();
@@ -315,9 +318,9 @@ async function sendMessage() {
                 } else if (event.type === "done") {
                     if (refs && fullText) {
                         finalizeStreamingMessage(refs.streamP, refs.textContainer, fullText);
-                        // Save turn to history so next question has context
-                        conversationHistory.push({ role: "user",      content: query    });
-                        conversationHistory.push({ role: "assistant",  content: fullText });
+                        // Save turn — truncate assistant answer so history payload stays small
+                        conversationHistory.push({ role: "user",      content: query });
+                        conversationHistory.push({ role: "assistant",  content: fullText.slice(0, 500) });
                     } else if (!refs) {
                         addErrorMessage("No response received. Is Ollama running?");
                     }

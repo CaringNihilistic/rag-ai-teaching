@@ -151,7 +151,7 @@ _MAX_HISTORY_TURNS = 3   # how many past Q&A pairs to keep in the prompt
 
 class HistoryMessage(BaseModel):
     role:    str = Field(..., pattern="^(user|assistant)$")
-    content: str = Field(..., max_length=2000)
+    content: str  # no max_length — server truncates to 300 chars in _build_prompt
 
 class QueryRequest(BaseModel):
     query:   str               = Field(..., min_length=1, max_length=500,
