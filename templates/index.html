@@ -203,7 +203,6 @@ function createStreamingBotMessage(sources) {
     title.innerHTML = "📘 Explanation";
     bubble.appendChild(title);
 
-    // Text container — tokens stream into streamP, then get replaced on done
     const textContainer = document.createElement("div");
     textContainer.className = "streaming-container";
     const streamP = document.createElement("p");
@@ -218,12 +217,109 @@ function createStreamingBotMessage(sources) {
     msg.appendChild(bubble);
     chatMessages.appendChild(msg);
     scrollToBottom();
-    return { streamP, textContainer };
+    return { streamP, textContainer, bubble };
 }
 
 /* =====================
-   FINALIZE after streaming done
-   Replace the single streaming <p> with properly formatted paragraphs.
+   FINALIZE BRIEF — show definition + Deep Dive button
+===================== */
+function finalizeBriefMessage(streamP, textContainer, bubble, fullText, query, historySnapshot) {
+    streamP.classList.remove("streaming-text");
+    textContainer.innerHTML = `<p class="explanation-paragraph brief-text">${fullText.trim()}</p>`;
+
+    // Deep Dive button — inserted before the sources section
+    const btn = document.createElement("button");
+    btn.className = "deep-dive-btn";
+    btn.innerHTML = "📖 Deep Dive →";
+    btn.onclick = () => expandAnswer(bubble, btn, query, historySnapshot);
+
+    const sources = bubble.querySelector(".sources");
+    sources ? bubble.insertBefore(btn, sources) : bubble.appendChild(btn);
+    scrollToBottom();
+}
+
+/* =====================
+   EXPAND — streams full answer into same bubble when Deep Dive clicked
+===================== */
+async function expandAnswer(bubble, btn, query, history) {
+    btn.remove();
+
+    // Expansion area — inserted before sources
+    const expContainer = document.createElement("div");
+    expContainer.className = "streaming-container expansion-container";
+    const divider = document.createElement("hr");
+    divider.className = "expansion-divider";
+    const expP = document.createElement("p");
+    expP.className = "explanation-paragraph streaming-text";
+    expContainer.appendChild(divider);
+    expContainer.appendChild(expP);
+
+    const sources = bubble.querySelector(".sources");
+    sources ? bubble.insertBefore(expContainer, sources) : bubble.appendChild(expContainer);
+    scrollToBottom();
+
+    let fullText = "";
+    try {
+        const response = await fetch("/ask/stream", {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify({ query, history })
+        });
+        if (!response.ok) {
+            const e = await response.text().catch(() => "");
+            expP.classList.remove("streaming-text");
+            expP.textContent = `⚠️ Error ${response.status}: ${e.slice(0, 150)}`;
+            return;
+        }
+
+        const reader  = response.body.getReader();
+        const decoder = new TextDecoder();
+        let   buffer  = "";
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop();
+
+            for (const line of lines) {
+                if (!line.startsWith("data: ")) continue;
+                let event;
+                try { event = JSON.parse(line.slice(6)); } catch { continue; }
+
+                if (event.type === "token") {
+                    fullText += event.token;
+                    expP.textContent = fullText;
+                    scrollToBottom();
+                } else if (event.type === "done" && fullText) {
+                    // Format full answer into paragraphs
+                    expP.classList.remove("streaming-text");
+                    const paragraphs = formatExplanation(fullText);
+                    expContainer.innerHTML = "";
+                    expContainer.appendChild(divider.cloneNode());
+                    paragraphs.forEach(para => {
+                        const p = document.createElement("p");
+                        p.className = "explanation-paragraph";
+                        p.textContent = para;
+                        expContainer.appendChild(p);
+                    });
+                    scrollToBottom();
+                } else if (event.type === "error") {
+                    expP.classList.remove("streaming-text");
+                    expP.textContent = "⚠️ " + event.message;
+                }
+                // 'sources' event intentionally ignored — already shown
+            }
+        }
+    } catch (err) {
+        expP.classList.remove("streaming-text");
+        expP.textContent = "⚠️ Failed to load full explanation.";
+    }
+}
+
+/* =====================
+   FINALIZE after streaming done (used by expandAnswer paragraph rebuild)
 ===================== */
 function finalizeStreamingMessage(streamP, textContainer, fullText) {
     streamP.classList.remove("streaming-text");
@@ -267,11 +363,10 @@ async function sendMessage() {
     let refs     = null;
     let fullText = "";
 
-    // Trim history to last MAX_HISTORY turns before sending
     const historyPayload = conversationHistory.slice(-(MAX_HISTORY * 2));
 
     try {
-        const response = await fetch("/ask/stream", {
+        const response = await fetch("/ask/brief", {
             method:  "POST",
             headers: { "Content-Type": "application/json" },
             body:    JSON.stringify({ query, history: historyPayload })
@@ -317,8 +412,9 @@ async function sendMessage() {
 
                 } else if (event.type === "done") {
                     if (refs && fullText) {
-                        finalizeStreamingMessage(refs.streamP, refs.textContainer, fullText);
-                        // Save turn — truncate assistant answer so history payload stays small
+                        // Show definition + Deep Dive button (pass history snapshot for the button click)
+                        finalizeBriefMessage(refs.streamP, refs.textContainer, refs.bubble,
+                                             fullText, query, historyPayload);
                         conversationHistory.push({ role: "user",      content: query });
                         conversationHistory.push({ role: "assistant",  content: fullText.slice(0, 500) });
                     } else if (!refs) {

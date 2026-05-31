@@ -468,6 +468,49 @@ body {
 }
 
 /* =====================
+   DEEP DIVE BUTTON + EXPANSION
+===================== */
+.deep-dive-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 14px 0;
+    padding: 10px 20px;
+    background: linear-gradient(135deg, var(--primary), var(--secondary));
+    color: white;
+    border: none;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.35);
+}
+
+.deep-dive-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 16px rgba(99, 102, 241, 0.5);
+}
+
+.deep-dive-btn:active {
+    transform: translateY(0);
+}
+
+.expansion-divider {
+    border: none;
+    border-top: 1px solid var(--border, #e2e8f0);
+    margin: 14px 0;
+}
+
+.expansion-container {
+    animation: none;
+}
+
+[data-theme="dark"] .expansion-divider {
+    border-color: #334155;
+}
+
+/* =====================
    RESPONSIVE
 ===================== */
 @media (max-width: 768px) {

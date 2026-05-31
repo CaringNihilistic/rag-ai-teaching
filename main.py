@@ -521,6 +521,81 @@ async def ask(req: QueryRequest):
     return {"answer": answer, "sources": sources}
 
 
+@app.post("/ask/brief", summary="Stream a 2-3 sentence definition (fast path, no HyDE/reranking)")
+async def ask_brief(req: QueryRequest):
+    """
+    Fast path: keyword search + semantic retrieval only.
+    No multi-query, no HyDE, no cross-encoder reranking.
+    Returns a 2-3 sentence definition in ~5-8s.
+    The client can follow up with /ask/stream for the full explanation.
+    """
+    async def generate():
+        try:
+            search_q = _contextualize_query(req.query, req.history)
+            results  = await asyncio.to_thread(search_hybrid, search_q)
+            sources  = format_sources(results)
+            yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
+
+            context, _, _ = _build_context(results)
+
+            history_block = ""
+            if req.history:
+                recent = req.history[-(2 * _MAX_HISTORY_TURNS):]
+                lines  = []
+                for msg in recent:
+                    role    = msg.role    if hasattr(msg, "role")    else msg.get("role", "user")
+                    content = msg.content if hasattr(msg, "content") else msg.get("content", "")
+                    label   = "Student" if role == "user" else "Tutor"
+                    lines.append(f"{label}: {content[:200]}")
+                history_block = "Conversation so far:\n" + "\n\n".join(lines) + "\n\n"
+
+            prompt = f"""You are an expert ML/DL tutor.
+{history_block}
+Give a concise answer to: "{req.query}"
+
+Write 2-3 sentences only:
+- What it IS (core definition)
+- Why it matters or how it works at a high level
+- One key practical insight (optional)
+
+No markdown. No bullet points. No examples. No long elaboration.
+Sources:
+{context[:1200]}
+
+Answer:"""
+
+            async with httpx.AsyncClient() as client:
+                async with client.stream(
+                    "POST", OLLAMA_CHAT,
+                    json={
+                        "model":    LLM_MODEL,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream":   True,
+                        "options":  {"temperature": 0.3, "num_predict": 120},
+                    },
+                    timeout=httpx.Timeout(60, connect=10),
+                ) as resp:
+                    async for line in resp.aiter_lines():
+                        if not line:
+                            continue
+                        chunk = json.loads(line)
+                        token = chunk.get("message", {}).get("content", "")
+                        if token:
+                            yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+                        if chunk.get("done"):
+                            break
+
+        except httpx.ConnectError:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Cannot connect to Ollama'})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        finally:
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.post("/ask/stream", summary="Stream answer tokens via Server-Sent Events")
 async def ask_stream(req: QueryRequest):
     """
