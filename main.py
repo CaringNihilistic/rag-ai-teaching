@@ -50,11 +50,36 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
-EMBED_MODEL    = "nomic-embed-text"
-LLM_MODEL      = "llama3.2"
-OLLAMA_EMBED   = "http://localhost:11434/api/embeddings"
-OLLAMA_CHAT    = "http://localhost:11434/api/chat"
+BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
+
+# ── Local (Ollama) defaults ──────────────────────────────────────────────────
+EMBED_MODEL  = "nomic-embed-text"
+LLM_MODEL    = "llama3.2"
+OLLAMA_EMBED = "http://localhost:11434/api/embeddings"
+OLLAMA_CHAT  = "http://localhost:11434/api/chat"
+
+# ── Groq (cloud LLM) ─────────────────────────────────────────────────────────
+# Set GROQ_API_KEY env var to use Groq instead of local Ollama for generation.
+# Free at console.groq.com — 14,400 req/day, ~300 tokens/s.
+GROQ_API_KEY  = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL    = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
+USE_GROQ      = bool(GROQ_API_KEY)
+
+# ── Local sentence-transformers embeddings ────────────────────────────────────
+# Set USE_LOCAL_EMBED=true to use sentence-transformers instead of Ollama.
+# Required in cloud deployments where Ollama is not running.
+USE_LOCAL_EMBED = os.getenv("USE_LOCAL_EMBED", "false").lower() == "true"
+_st_embed       = None   # populated in lifespan if USE_LOCAL_EMBED=true
+
+# ── S3 model file storage ─────────────────────────────────────────────────────
+# Set S3_BUCKET to automatically download FAISS index + metadata at startup.
+S3_BUCKET     = os.getenv("S3_BUCKET", "")
+S3_INDEX_KEY  = os.getenv("S3_INDEX_KEY",  "models/faiss_with_titles.index")
+S3_META_KEY   = os.getenv("S3_META_KEY",   "models/faiss_metadata_clean.json")
+
+# ── Server ───────────────────────────────────────────────────────────────────
+PORT = int(os.getenv("PORT", 5000))   # Render injects $PORT automatically
 
 # ---------------------------------------------------------------------------
 # Module-level state (populated in lifespan startup)
@@ -70,9 +95,45 @@ _all_embeddings: np.ndarray = None  # type: ignore[assignment]
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global index, metadata, video_indices, book_indices, _all_embeddings
+    global index, metadata, video_indices, book_indices, _all_embeddings, _st_embed
 
     print("🔄  Loading RAG system …")
+
+    # ── S3 download ───────────────────────────────────────────────────────────
+    if S3_BUCKET:
+        print("   ⬇️  Downloading model files from S3 …")
+        try:
+            import boto3
+            s3          = boto3.client("s3")
+            models_dir  = os.path.join(BASE_DIR, "models")
+            os.makedirs(models_dir, exist_ok=True)
+            for s3_key, local_name in [
+                (S3_INDEX_KEY, "faiss_with_titles.index"),
+                (S3_META_KEY,  "faiss_metadata_clean.json"),
+            ]:
+                local_path = os.path.join(models_dir, local_name)
+                if not os.path.exists(local_path):
+                    print(f"      {s3_key} …")
+                    await asyncio.to_thread(s3.download_file, S3_BUCKET, s3_key, local_path)
+                    print(f"      ✅  {local_name}")
+                else:
+                    print(f"      ✅  {local_name} (cached)")
+        except Exception as _e:
+            print(f"   ⚠️  S3 download failed: {_e}")
+
+    # ── Local embedding model ─────────────────────────────────────────────────
+    if USE_LOCAL_EMBED:
+        print("   🧲  Loading local embedding model …")
+        try:
+            from sentence_transformers import SentenceTransformer
+            _st_embed = await asyncio.to_thread(
+                SentenceTransformer,
+                "nomic-ai/nomic-embed-text-v1.5",
+                trust_remote_code=True,
+            )
+            print("   ✅  nomic-embed-text-v1.5 (sentence-transformers)")
+        except Exception as _e:
+            print(f"   ⚠️  Local embed failed ({_e}) — falling back to Ollama")
 
     # Resolve index file — check project root then models/ subdirectory
     _search_dirs = [BASE_DIR, os.path.join(BASE_DIR, "models")]
@@ -171,6 +232,12 @@ def clean_text(text: str) -> str:
 
 
 def embed_query(text: str) -> np.ndarray:
+    # Cloud path: sentence-transformers (no Ollama needed)
+    if USE_LOCAL_EMBED and _st_embed is not None:
+        emb = _st_embed.encode([text], normalize_embeddings=True)[0].astype("float32")
+        return emb
+
+    # Local path: Ollama
     import requests as _req
     try:
         r = _req.post(OLLAMA_EMBED, json={"model": EMBED_MODEL, "prompt": text}, timeout=30)
@@ -472,29 +539,82 @@ def format_sources(results: dict) -> dict:
     return {"videos": videos}
 
 
+async def _stream_llm(prompt: str, max_tokens: int = 800, temperature: float = 0.7):
+    """Async token generator — routes to Groq (cloud) or Ollama (local)."""
+    if USE_GROQ:
+        async with httpx.AsyncClient() as client:
+            async with client.stream(
+                "POST", GROQ_BASE_URL,
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                json={"model": GROQ_MODEL,
+                      "messages": [{"role": "user", "content": prompt}],
+                      "stream": True, "max_tokens": max_tokens, "temperature": temperature},
+                timeout=httpx.Timeout(60, connect=10),
+            ) as resp:
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: ") or line == "data: [DONE]":
+                        continue
+                    chunk = json.loads(line[6:])
+                    token = (chunk.get("choices") or [{}])[0].get("delta", {}).get("content", "")
+                    if token:
+                        yield token
+    else:
+        async with httpx.AsyncClient() as client:
+            async with client.stream(
+                "POST", OLLAMA_CHAT,
+                json={"model": LLM_MODEL,
+                      "messages": [{"role": "user", "content": prompt}],
+                      "stream": True,
+                      "options": {"temperature": temperature, "num_predict": max_tokens}},
+                timeout=httpx.Timeout(180, connect=10),
+            ) as resp:
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    chunk = json.loads(line)
+                    token = chunk.get("message", {}).get("content", "")
+                    if token:
+                        yield token
+                    if chunk.get("done"):
+                        break
+
+
 def generate_answer_sync(query: str, results: dict, history: list | None = None) -> str:
     import requests as _req
     ctx, book_texts, video_texts = _build_context(results)
     prompt = _build_prompt(query, ctx, history)
     try:
-        r = _req.post(
-            OLLAMA_CHAT,
-            json={"model": LLM_MODEL,
-                  "messages": [{"role": "user", "content": prompt}],
-                  "stream": False,
-                  "options": {"temperature": 0.7, "num_predict": 800}},
-            timeout=180,
-        )
+        if USE_GROQ:
+            import httpx as _hx
+            r = _hx.post(
+                GROQ_BASE_URL,
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                json={"model": GROQ_MODEL,
+                      "messages": [{"role": "user", "content": prompt}],
+                      "max_tokens": 800, "temperature": 0.7},
+                timeout=60,
+            )
+        else:
+            r = _req.post(
+                OLLAMA_CHAT,
+                json={"model": LLM_MODEL,
+                      "messages": [{"role": "user", "content": prompt}],
+                      "stream": False,
+                      "options": {"temperature": 0.7, "num_predict": 800}},
+                timeout=180,
+            )
         if r.status_code == 200:
-            answer = r.json().get("message",{}).get("content") or r.json().get("response","")
-            if answer.strip():
-                return re.sub(r'\*\*|##|__', '', answer).strip()
+            data   = r.json()
+            answer = (data.get("choices") or [{}])[0].get("message", {}).get("content") \
+                     if USE_GROQ else \
+                     data.get("message", {}).get("content") or data.get("response", "")
+            if answer and answer.strip():
+                return answer.strip()
     except Exception:
         pass
-    # Fallback
     parts = []
     for texts, n in ((book_texts, 10), (video_texts[:2], 5)):
-        sents = [s.strip() for s in re.split(r'(?<=[.!?])\s+', " ".join(texts)) if len(s.strip())>40]
+        sents = [s.strip() for s in re.split(r'(?<=[.!?])\s+', " ".join(texts)) if len(s.strip()) > 40]
         if sents:
             parts.append(" ".join(sents[:n]))
     return ("Here is what the course material covers:\n\n" + "\n\n".join(parts)) if parts \
@@ -564,29 +684,11 @@ Sources:
 
 Answer:"""
 
-            async with httpx.AsyncClient() as client:
-                async with client.stream(
-                    "POST", OLLAMA_CHAT,
-                    json={
-                        "model":    LLM_MODEL,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "stream":   True,
-                        "options":  {"temperature": 0.3, "num_predict": 120},
-                    },
-                    timeout=httpx.Timeout(60, connect=10),
-                ) as resp:
-                    async for line in resp.aiter_lines():
-                        if not line:
-                            continue
-                        chunk = json.loads(line)
-                        token = chunk.get("message", {}).get("content", "")
-                        if token:
-                            yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
-                        if chunk.get("done"):
-                            break
+            async for token in _stream_llm(prompt, max_tokens=120, temperature=0.3):
+                yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
 
         except httpx.ConnectError:
-            yield f"data: {json.dumps({'type': 'error', 'message': 'Cannot connect to Ollama'})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Cannot connect to LLM'})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
         finally:
@@ -618,30 +720,11 @@ async def ask_stream(req: QueryRequest):
             context, _, _ = _build_context(reranked)
             prompt        = _build_prompt(req.query, context, req.history)
 
-            # Async HTTP to Ollama — doesn't block the event loop
-            async with httpx.AsyncClient() as client:
-                async with client.stream(
-                    "POST", OLLAMA_CHAT,
-                    json={
-                        "model":    LLM_MODEL,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "stream":   True,
-                        "options":  {"temperature": 0.7, "num_predict": 800},
-                    },
-                    timeout=httpx.Timeout(180, connect=10),
-                ) as resp:
-                    async for line in resp.aiter_lines():
-                        if not line:
-                            continue
-                        chunk = json.loads(line)
-                        token = chunk.get("message", {}).get("content", "")
-                        if token:
-                            yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
-                        if chunk.get("done"):
-                            break
+            async for token in _stream_llm(prompt, max_tokens=800, temperature=0.7):
+                yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
 
         except httpx.ConnectError:
-            yield f"data: {json.dumps({'type': 'error', 'message': 'Cannot connect to Ollama — is it running on port 11434?'})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Cannot connect to LLM — check GROQ_API_KEY or Ollama'})}\n\n"
         except httpx.TimeoutException:
             yield f"data: {json.dumps({'type': 'error', 'message': 'LLM timed out. Try a shorter question.'})}\n\n"
         except Exception as e:
@@ -668,10 +751,11 @@ if __name__ == "__main__":
     print("    Press CTRL+C to quit")
     print("=" * 60 + "\n")
 
+    host = "0.0.0.0" if os.getenv("RENDER") or os.getenv("RAILWAY_ENVIRONMENT") else "127.0.0.1"
     uvicorn.run(
         "main:app",
-        host="127.0.0.1",
-        port=5000,
+        host=host,
+        port=PORT,
         reload=False,   # set True during dev; causes double-startup
         log_level="info",
     )
