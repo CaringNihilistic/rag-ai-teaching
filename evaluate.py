@@ -36,18 +36,26 @@ import requests
 # ---------------------------------------------------------------------------
 BASE_DIR = Path(__file__).parent
 
-# Load FAISS index
+# Load FAISS index — check project root then models/ subdirectory
+_search_dirs = [BASE_DIR, BASE_DIR / "models"]
+INDEX_FILE = None
 for _fname in ("faiss_with_titles.index", "faiss.index"):
-    _path = BASE_DIR / _fname
-    if _path.exists():
-        INDEX_FILE = str(_path)
+    for _d in _search_dirs:
+        if (_d / _fname).exists():
+            INDEX_FILE = str(_d / _fname)
+            break
+    if INDEX_FILE:
         break
-else:
-    sys.exit("❌  No FAISS index found. Run the full pipeline first.")
+if not INDEX_FILE:
+    sys.exit("❌  No FAISS index found in project root or models/. Run the full pipeline first.")
 
-METADATA_FILE = BASE_DIR / "faiss_metadata_clean.json"
-if not METADATA_FILE.exists():
-    sys.exit(f"❌  Metadata not found: {METADATA_FILE}")
+METADATA_FILE = None
+for _d in _search_dirs:
+    if (_d / "faiss_metadata_clean.json").exists():
+        METADATA_FILE = _d / "faiss_metadata_clean.json"
+        break
+if not METADATA_FILE:
+    sys.exit("❌  faiss_metadata_clean.json not found in project root or models/")
 
 print("🔄  Loading index + metadata …")
 index    = faiss.read_index(INDEX_FILE)

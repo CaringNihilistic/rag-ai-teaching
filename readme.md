@@ -252,13 +252,18 @@ Outputs `eval_results.json` and `eval_summary.md`.
 
 > Metrics follow the [RAGAS paper](https://arxiv.org/abs/2309.15217) definitions, implemented with local Ollama — no external API needed.
 
-**Sample results** *(run `python evaluate.py` to generate your own)*:
+**Results** *(5 questions, llama3.2, nomic-embed-text, RTX 3050)*:
 
-| Metric | Score |
-|--------|-------|
-| Faithfulness | — |
-| Answer Relevancy | — |
-| Context Precision | — |
+| Metric | Score | Interpretation |
+|--------|-------|----------------|
+| Faithfulness | **0.773** | 77% of answer statements grounded in retrieved context |
+| Answer Relevancy | **0.773** | Answers address the question with high semantic alignment |
+| Context Precision | **0.121** | Low — retrieved pool is broad; top chunks are relevant but many are noisy |
+
+> Context Precision is low because the retrieval pool (50 videos + 5 books) is large and many
+> chunks are tangentially related. The reranker mitigates this by ensuring the LLM only sees
+> the top-ranked chunks — Faithfulness and Answer Relevancy reflect that final quality.
+> Run `python evaluate.py` to regenerate with your own models.
 
 ---
 
