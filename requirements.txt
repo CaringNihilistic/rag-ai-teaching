@@ -1,4 +1,7 @@
-flask>=3.0.0
+flask>=3.0.0          # kept for app.py (legacy); main.py uses FastAPI
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+httpx>=0.27.0         # async HTTP client for Ollama streaming in FastAPI
 faiss-cpu>=1.7.4
 numpy>=1.24.0
 requests>=2.31.0
@@ -6,4 +9,7 @@ openai-whisper>=20231117
 torch>=2.0.0
 pypdf>=3.0.0
 yt-dlp>=2024.1.0
-difflib2
+sentence-transformers>=2.7.0
+# Evaluation (evaluate.py) — uses local Ollama instead of RAGAS library
+# ragas 0.4.x has broken imports against langchain-community 0.4.x; native impl used instead
+# ragas==0.1.21  # uncomment if you want to try the library directly

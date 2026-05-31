@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Teaching Assistant</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="/static/css/style.css">
 </head>
 
 <body>
@@ -52,7 +52,7 @@
 
 <script>
 const chatMessages = document.getElementById("chatMessages");
-const userInput = document.getElementById("userInput");
+const userInput    = document.getElementById("userInput");
 const typingIndicator = document.getElementById("typingIndicator");
 
 /* =====================
@@ -64,38 +64,27 @@ function toggleTheme() {
     html.setAttribute("data-theme", next);
     localStorage.setItem("theme", next);
 }
-
 (function initTheme() {
-    const saved = localStorage.getItem("theme") || "light";
-    document.documentElement.setAttribute("data-theme", saved);
+    document.documentElement.setAttribute("data-theme", localStorage.getItem("theme") || "light");
 })();
 
 /* =====================
    INPUT HANDLING
 ===================== */
 function handleKeyPress(e) {
-    if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        sendMessage();
-    }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 }
-
-function askQuestion(q) {
-    userInput.value = q;
-    sendMessage();
-}
+function askQuestion(q) { userInput.value = q; sendMessage(); }
 
 /* =====================
    USER MESSAGE
 ===================== */
 function addUserMessage(text) {
-    const msg = document.createElement("div");
+    const msg    = document.createElement("div");
     msg.className = "message";
-
     const bubble = document.createElement("div");
     bubble.className = "user-message";
     bubble.textContent = text;
-
     msg.appendChild(bubble);
     chatMessages.appendChild(msg);
     chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -105,7 +94,6 @@ function addUserMessage(text) {
    FORMAT TEXT
 ===================== */
 function formatExplanation(text) {
-    // Clean up noise
     let cleaned = text
         .replace(/📘\s*\*\*From.*?\*\*:/gi, "")
         .replace(/📘\s*\*\*Definition.*?\*\*:/gi, "")
@@ -114,135 +102,182 @@ function formatExplanation(text) {
         .replace(/👉.*$/gi, "")
         .replace(/Check the video tutorials below.*$/gi, "")
         .trim();
-    
-    // Split into sentences
-    const sentences = cleaned.match(/[^.!?]+[.!?]+/g) || [cleaned];
-    
-    // Group into paragraphs (3-4 sentences each)
+    const sentences  = cleaned.match(/[^.!?]+[.!?]+/g) || [cleaned];
     const paragraphs = [];
     for (let i = 0; i < sentences.length; i += 3) {
-        const para = sentences.slice(i, i + 3).join(' ').trim();
-        if (para && para.length > 20) {  // Ignore very short fragments
-            paragraphs.push(para);
-        }
+        const para = sentences.slice(i, i + 3).join(" ").trim();
+        if (para && para.length > 20) paragraphs.push(para);
     }
-    
     return paragraphs.length > 0 ? paragraphs : [cleaned];
 }
 
 /* =====================
-   BOT MESSAGE
+   BUILD SOURCES DIV (shared)
 ===================== */
-function addBotMessage(answer, sources) {
-    const msg = document.createElement("div");
-    msg.className = "message";
+function buildSourcesDiv(sources) {
+    const s  = document.createElement("div");
+    s.className = "sources";
+    const h4 = document.createElement("h4");
+    h4.innerHTML = "🎥 Video Tutorials";
+    s.appendChild(h4);
+    sources.videos.forEach((v, i) => {
+        const card = document.createElement("div");
+        card.className = "video-ref";
+        const cleanTitle = v.title.replace(".wav", "").replace(/^\d+[\s_-]*/, "").trim();
+        card.innerHTML = `
+            <strong>${i + 1}. ${cleanTitle}</strong>
+            <span class="score">⭐ ${v.score}</span><br>
+            <a href="${v.url}" target="_blank" rel="noopener noreferrer">
+                ▶️ Watch from <span class="timestamp">${v.timestamp}</span>
+            </a>`;
+        s.appendChild(card);
+    });
+    return s;
+}
 
+/* =====================
+   STREAMING BOT MESSAGE
+   Creates the shell immediately with sources pre-populated.
+   Returns refs so the caller can append tokens into streamP.
+===================== */
+function createStreamingBotMessage(sources) {
+    const msg    = document.createElement("div");
+    msg.className = "message";
     const bubble = document.createElement("div");
     bubble.className = "bot-message";
 
-    /* ----- EXPLANATION ----- */
     const title = document.createElement("h3");
     title.innerHTML = "📘 Explanation";
     bubble.appendChild(title);
 
-    const paragraphs = formatExplanation(answer);
-    
-    paragraphs.forEach(para => {
-        const p = document.createElement("p");
-        p.className = "explanation-paragraph";
-        p.textContent = para;
-        bubble.appendChild(p);
-    });
+    // Text container — tokens stream into streamP, then get replaced on done
+    const textContainer = document.createElement("div");
+    textContainer.className = "streaming-container";
+    const streamP = document.createElement("p");
+    streamP.className = "explanation-paragraph streaming-text";
+    textContainer.appendChild(streamP);
+    bubble.appendChild(textContainer);
 
-    /* ----- VIDEOS ----- */
     if (sources && sources.videos && sources.videos.length > 0) {
-        const s = document.createElement("div");
-        s.className = "sources";
-
-        const h4 = document.createElement("h4");
-        h4.innerHTML = "🎥 Video Tutorials";
-        s.appendChild(h4);
-
-        sources.videos.forEach((v, i) => {
-            const card = document.createElement("div");
-            card.className = "video-ref";
-            
-            // Clean title
-            const cleanTitle = v.title
-                .replace('.wav', '')
-                .replace(/^\d+[\s_-]*/, '')
-                .trim();
-            
-            card.innerHTML = `
-                <strong>${i + 1}. ${cleanTitle}</strong>
-                <span class="score">⭐ ${v.score}</span><br>
-                <a href="${v.url}" target="_blank" rel="noopener noreferrer">
-                    ▶️ Watch from <span class="timestamp">${v.timestamp}</span>
-                </a>
-            `;
-            s.appendChild(card);
-        });
-
-        bubble.appendChild(s);
+        bubble.appendChild(buildSourcesDiv(sources));
     }
 
     msg.appendChild(bubble);
     chatMessages.appendChild(msg);
     chatMessages.scrollTop = chatMessages.scrollHeight;
+    return { streamP, textContainer };
+}
+
+/* =====================
+   FINALIZE after streaming done
+   Replace the single streaming <p> with properly formatted paragraphs.
+===================== */
+function finalizeStreamingMessage(streamP, textContainer, fullText) {
+    streamP.classList.remove("streaming-text");
+    const paragraphs = formatExplanation(fullText);
+    textContainer.innerHTML = "";
+    paragraphs.forEach(para => {
+        const p = document.createElement("p");
+        p.className = "explanation-paragraph";
+        p.textContent = para;
+        textContainer.appendChild(p);
+    });
 }
 
 /* =====================
    ERROR MESSAGE
 ===================== */
 function addErrorMessage(errorText) {
-    const msg = document.createElement("div");
+    const msg    = document.createElement("div");
     msg.className = "message";
-    
     const bubble = document.createElement("div");
     bubble.className = "bot-message error-message";
     bubble.innerHTML = `<strong>⚠️ Error:</strong> ${errorText}`;
-    
     msg.appendChild(bubble);
     chatMessages.appendChild(msg);
     chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
 /* =====================
-   SEND MESSAGE
+   SEND MESSAGE — streaming via /ask/stream SSE
 ===================== */
 async function sendMessage() {
     const query = userInput.value.trim();
     if (!query) return;
 
-    // Add user message
     addUserMessage(query);
-    userInput.value = "";
+    userInput.value    = "";
     userInput.disabled = true;
-
-    // Show typing indicator
     typingIndicator.classList.add("active");
 
+    let refs     = null;   // { streamP, textContainer }
+    let fullText = "";
+
     try {
-        const res = await fetch("/ask", {
-            method: "POST",
+        const response = await fetch("/ask/stream", {
+            method:  "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query })
+            body:    JSON.stringify({ query })
         });
 
-        if (!res.ok) {
-            throw new Error(`Server error: ${res.status}`);
-        }
+        if (!response.ok) throw new Error(`Server error: ${response.status}`);
 
-        const data = await res.json();
-        
-        if (data.error) {
-            addErrorMessage(data.error);
-        } else {
-            addBotMessage(data.answer, data.sources);
+        const reader  = response.body.getReader();
+        const decoder = new TextDecoder();
+        let   buffer  = "";
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            // Buffer incoming bytes — a single read() chunk may span multiple SSE events
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop();   // hold the last (possibly incomplete) line
+
+            for (const line of lines) {
+                if (!line.startsWith("data: ")) continue;
+                let event;
+                try { event = JSON.parse(line.slice(6)); } catch { continue; }
+
+                if (event.type === "sources") {
+                    // Sources arrive first (~100ms); hide spinner, create message shell
+                    typingIndicator.classList.remove("active");
+                    refs = createStreamingBotMessage(event.sources);
+
+                } else if (event.type === "token") {
+                    if (!refs) {
+                        // Guard: sources event missing (shouldn't happen)
+                        typingIndicator.classList.remove("active");
+                        refs = createStreamingBotMessage({ videos: [] });
+                    }
+                    fullText += event.token;
+                    refs.streamP.textContent = fullText;
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+
+                } else if (event.type === "done") {
+                    if (refs && fullText) {
+                        finalizeStreamingMessage(refs.streamP, refs.textContainer, fullText);
+                    } else if (!refs) {
+                        addErrorMessage("No response received. Is Ollama running?");
+                    }
+
+                } else if (event.type === "error") {
+                    typingIndicator.classList.remove("active");
+                    if (refs) {
+                        refs.streamP.classList.remove("streaming-text");
+                        refs.streamP.style.color = "var(--error, #dc2626)";
+                        refs.streamP.textContent = "⚠️ " + event.message;
+                    } else {
+                        addErrorMessage(event.message);
+                    }
+                }
+            }
         }
-    } catch (error) {
-        console.error("Error:", error);
-        addErrorMessage("Failed to connect to server. Please check if the server is running.");
+    } catch (err) {
+        console.error("Streaming error:", err);
+        typingIndicator.classList.remove("active");
+        addErrorMessage("Failed to connect to server. Is the server running?");
     } finally {
         typingIndicator.classList.remove("active");
         userInput.disabled = false;
@@ -253,9 +288,7 @@ async function sendMessage() {
 /* =====================
    INIT
 ===================== */
-window.onload = () => {
-    userInput.focus();
-};
+window.onload = () => userInput.focus();
 </script>
 </body>
 </html>

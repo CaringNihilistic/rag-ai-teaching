@@ -466,19 +466,21 @@ body {
         padding: 8px 12px;
     }
 }
-```
 
----
+/* =====================
+   STREAMING CURSOR
+   Shown on .streaming-text while tokens are arriving.
+   Removed by JS when the 'done' event fires.
+===================== */
+.streaming-text::after {
+    content: '▋';
+    display: inline-block;
+    margin-left: 2px;
+    animation: blink-cursor 0.75s step-end infinite;
+    color: var(--primary);
+}
 
-## Folder Structure:
-```
-C:\Project- RAG Based Al Teaching\
-├── app.py
-├── templates/
-│   └── index.html  ← Paste first code here
-├── static/
-│   └── css/
-│       └── style.css  ← Paste second code here
-├── faiss.index
-├── faiss_metadata_clean.json
-└── ... (other files)
+@keyframes blink-cursor {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0; }
+}

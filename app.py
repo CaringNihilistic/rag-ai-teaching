@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response, stream_with_context
 import json
 import faiss
 import numpy as np
@@ -9,34 +9,81 @@ import webbrowser
 import threading
 from collections import defaultdict
 
+try:
+    from sentence_transformers import CrossEncoder as _CrossEncoder
+    _reranker = _CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", max_length=512)
+    RERANKER_AVAILABLE = True
+except ImportError:
+    _reranker = None
+    RERANKER_AVAILABLE = False
+
 app = Flask(__name__)
 
 # =========================
 # CONFIG
 # =========================
-BASE_DIR = r"C:\Project- RAG Based Al Teaching"
-FAISS_INDEX_FILE = os.path.join(BASE_DIR, "faiss_with_titles.index")  # ← FIXED
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # Bug 1: was hardcoded absolute path
+
+# Bug 9: app.py loaded faiss_with_titles.index but swap_the_index.py outputs faiss.index
+# Try the titles-enhanced index first, then fall back to the standard pipeline output
+for _fname in ("faiss_with_titles.index", "faiss.index"):
+    _candidate = os.path.join(BASE_DIR, _fname)
+    if os.path.exists(_candidate):
+        FAISS_INDEX_FILE = _candidate
+        break
+else:
+    FAISS_INDEX_FILE = os.path.join(BASE_DIR, "faiss_with_titles.index")  # will give a clear error below
+
 METADATA_FILE = os.path.join(BASE_DIR, "faiss_metadata_clean.json")
 
 EMBED_MODEL = "nomic-embed-text"
 LLM_MODEL = "llama3.2"
 OLLAMA_EMBED_URL = "http://localhost:11434/api/embeddings"
 OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
+MAX_QUERY_LEN = 500
 
 # =========================
 # LOAD SYSTEM
 # =========================
 print("🔄 Loading RAG system...")
+
+# Bug 3: crash at startup had no helpful message; now checks files explicitly
+if not os.path.exists(FAISS_INDEX_FILE):
+    raise FileNotFoundError(
+        f"\n❌ FAISS index not found: {FAISS_INDEX_FILE}\n"
+        "Run the full pipeline first (stages 1-12).\n"
+    )
+if not os.path.exists(METADATA_FILE):
+    raise FileNotFoundError(
+        f"\n❌ Metadata file not found: {METADATA_FILE}\n"
+        "Run the full pipeline first (stages 1-12).\n"
+    )
+
 index = faiss.read_index(FAISS_INDEX_FILE)
 
 with open(METADATA_FILE, encoding="utf-8") as f:
     metadata = json.load(f)
 
-book_count = sum(1 for c in metadata if c.get("source_type") == "book")
-video_count = sum(1 for c in metadata if c.get("source_type") == "video")
+# Bug 4: was doing a full O(N) metadata scan on every request; pre-index by type at startup
+video_indices = [i for i, c in enumerate(metadata) if c.get("source_type") == "video"]
+book_indices  = [i for i, c in enumerate(metadata) if c.get("source_type") == "book"]
+
+book_count  = len(book_indices)
+video_count = len(video_indices)
+
+# Bug 5: was calling index.reconstruct(idx) in a per-query loop; load all embeddings once
+print("   📦 Pre-loading embeddings into RAM...")
+_all_embeddings = np.zeros((index.ntotal, index.d), dtype="float32")
+for _i in range(index.ntotal):
+    _all_embeddings[_i] = index.reconstruct(_i)
+
+if RERANKER_AVAILABLE:
+    print("   🏆 Reranker: cross-encoder/ms-marco-MiniLM-L-6-v2 (ready)")
+else:
+    print("   ⚠️  Reranker: not available — run: pip install sentence-transformers")
 
 print(f"✅ System Ready!")
-print(f"   📊 Index: {index.ntotal} vectors")
+print(f"   📊 Index: {index.ntotal} vectors ({FAISS_INDEX_FILE.split(os.sep)[-1]})")
 print(f"   📚 Books: {book_count} chunks")
 print(f"   🎥 Videos: {video_count} chunks\n")
 
@@ -51,12 +98,17 @@ def clean_text(text):
     return text.strip()
 
 def embed_query(text):
-    r = requests.post(
-        OLLAMA_EMBED_URL,
-        json={"model": EMBED_MODEL, "prompt": text},
-        timeout=30
-    )
-    r.raise_for_status()
+    try:
+        r = requests.post(
+            OLLAMA_EMBED_URL,
+            json={"model": EMBED_MODEL, "prompt": text},
+            timeout=30
+        )
+        r.raise_for_status()
+    except requests.exceptions.ConnectionError:
+        raise RuntimeError("Cannot connect to Ollama — is it running on port 11434?")
+    except requests.exceptions.Timeout:
+        raise RuntimeError("Ollama embedding timed out after 30s.")
     emb = np.array(r.json()["embedding"], dtype="float32")
     faiss.normalize_L2(emb.reshape(1, -1))
     return emb
@@ -95,63 +147,52 @@ def search_hybrid(query):
         "gradient": ["gradient", "descent"]
     }
     
-    # Step 1: Filter videos by title keywords (FAST - no embedding needed)
+    # Step 1: Filter videos by title keywords using pre-built index (Bug 4: no O(N) scan)
     keyword_video_indices = []
-    all_video_indices = []
-    
-    for i, chunk in enumerate(metadata):
-        if chunk.get("source_type") == "video":
-            all_video_indices.append(i)
-            
-            title = chunk.get("title", "").lower()
-            title_clean = re.sub(r'^\d+[\s_-]*', '', title).replace(".wav", "")
-            
-            # Check if any keyword in title
-            has_keyword = any(k in title_clean for k in keywords)
-            
-            # Check acronyms
-            if not has_keyword:
-                for k in keywords:
-                    if k in acronyms and any(a in title_clean for a in acronyms[k]):
-                        has_keyword = True
-                        break
-            
-            if has_keyword:
-                keyword_video_indices.append(i)
-    
+    for i in video_indices:
+        title = metadata[i].get("title", "").lower()
+        title_clean = re.sub(r'^\d+[\s_-]*', '', title).replace(".wav", "")
+
+        has_keyword = any(k in title_clean for k in keywords)
+        if not has_keyword:
+            for k in keywords:
+                if k in acronyms and any(a in title_clean for a in acronyms[k]):
+                    has_keyword = True
+                    break
+        if has_keyword:
+            keyword_video_indices.append(i)
+
     # Step 2: Decide which videos to search
     if keyword_video_indices:
         print(f"   ✅ Found {len(keyword_video_indices)} videos with keywords")
-        search_indices = keyword_video_indices
+        search_video_indices = keyword_video_indices
     else:
-        print(f"   📊 No keyword matches, searching all {len(all_video_indices)} videos")
-        search_indices = all_video_indices
-    
-    # Step 3: Get similarities for filtered videos only (OPTIMIZED)
+        print(f"   📊 No keyword matches, searching all {len(video_indices)} videos")
+        search_video_indices = video_indices
+
+    # Step 3: Batch similarity via pre-loaded embeddings (Bug 5: no per-chunk reconstruct loop)
     q_emb = embed_query(query)
-    
+    q_flat = q_emb.flatten()
+
+    video_embs  = _all_embeddings[search_video_indices]   # shape (N, d)
+    video_scores = video_embs @ q_flat                    # vectorized dot product
+
     video_results = []
-    for idx in search_indices:
-        chunk_emb = index.reconstruct(int(idx))
-        score = float(np.dot(q_emb.flatten(), chunk_emb))
-        
+    for rank, idx in enumerate(search_video_indices):
         chunk = metadata[idx].copy()
-        chunk["score"] = score
+        chunk["score"] = float(video_scores[rank])
         video_results.append(chunk)
-    
     video_results.sort(key=lambda x: x["score"], reverse=True)
-    
-    # Step 4: Get book results
+
+    # Step 4: Book results — same batch approach (Bug 4+5)
+    book_embs   = _all_embeddings[book_indices]
+    book_scores = book_embs @ q_flat
+
     book_results = []
-    for i, chunk in enumerate(metadata):
-        if chunk.get("source_type") == "book":
-            chunk_emb = index.reconstruct(int(i))
-            score = float(np.dot(q_emb.flatten(), chunk_emb))
-            
-            chunk = chunk.copy()
-            chunk["score"] = score
-            book_results.append(chunk)
-    
+    for rank, idx in enumerate(book_indices):
+        chunk = metadata[idx].copy()
+        chunk["score"] = float(book_scores[rank])
+        book_results.append(chunk)
     book_results.sort(key=lambda x: x["score"], reverse=True)
     
     # Show top results
@@ -166,48 +207,44 @@ def search_hybrid(query):
     }
 
 # =========================
-# ANSWER GENERATION
+# CONTEXT + PROMPT HELPERS
+# Extracted so both the streaming and non-streaming endpoints share the same logic.
 # =========================
-def generate_answer(query, results):
+def _build_context(results):
+    """Returns (context_str, book_texts, video_texts). Shared by streaming and non-streaming."""
     context_blocks = []
     book_texts = []
     video_texts = []
 
-    # Book context
     for book in results.get("books", [])[:3]:
         text = clean_text(book.get("text", ""))[:600]
-        
         title = book.get("title", "") or book.get("source", "") or "Reference Book"
-        title = re.sub(r'^\d+[\s_-]*', '', title).replace(".pdf", "").strip()[:50]
-        title = title if title else "Reference Book"
-        
+        title = re.sub(r'^\d+[\s_-]*', '', title).replace(".pdf", "").strip()[:50] or "Reference Book"
         if text:
             book_texts.append(text)
             context_blocks.append(f"[BOOK] {title}\n{text}")
 
-    # Video context
     for v in results.get("videos", [])[:4]:
         text = clean_text(v.get("text", ""))[:300]
         title = re.sub(r'^\d+[\s_-]*', '', v.get("title", ""))[:50]
         start = int(v.get("start", 0))
-        
         if text:
             video_texts.append(text)
             context_blocks.append(f"[VIDEO] {title} at {start//60}:{start%60:02d}\n{text}")
 
     context = "\n\n".join(context_blocks)
 
-    # Debug prints
-    print(f"   🧪 Book chunks: {len(book_texts)}")
-    print(f"   🧪 Video chunks: {len(video_texts)}")
-    print(f"   🧪 Context length: {len(context)} chars")
-
-    # Keep prompt under 3000 chars to avoid overload
     if len(context) > 3000:
-        context = context[:3000]
-        print(f"   ✂️  Context trimmed to 3000 chars")
+        truncated = context[:3000]
+        last_period = max(truncated.rfind('. '), truncated.rfind('.\n'))
+        context = truncated[:last_period + 1] if last_period > 1500 else truncated
+        print(f"   ✂️  Context trimmed to {len(context)} chars")
 
-    prompt = f"""You are an expert AI tutor for Machine Learning and Deep Learning.
+    return context, book_texts, video_texts
+
+
+def _build_prompt(query, context):
+    return f"""You are an expert AI tutor for Machine Learning and Deep Learning.
 
 A student asked: "{query}"
 
@@ -227,10 +264,19 @@ Sources:
 
 Answer:"""
 
-    print(f"   🧪 Prompt length: {len(prompt)} chars")
-    print(f"   🤖 Sending to LLM at {OLLAMA_CHAT_URL}...")
 
-    # Try LLM
+# =========================
+# ANSWER GENERATION (non-streaming, kept as fallback)
+# =========================
+def generate_answer(query, results):
+    context, book_texts, video_texts = _build_context(results)
+
+    print(f"   🧪 Book chunks: {len(book_texts)}, Video chunks: {len(video_texts)}")
+    print(f"   🧪 Context: {len(context)} chars")
+
+    prompt = _build_prompt(query, context)
+    print(f"   🤖 Sending to LLM (non-streaming)...")
+
     try:
         r = requests.post(
             OLLAMA_CHAT_URL,
@@ -238,82 +284,101 @@ Answer:"""
                 "model": LLM_MODEL,
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
-                "options": {
-                    "temperature": 0.7,
-                    "num_predict": 800
-                }
+                "options": {"temperature": 0.7, "num_predict": 800}
             },
             timeout=180
         )
-
-        print(f"   📡 LLM status: {r.status_code}")
-
         if r.status_code == 200:
-            data = r.json()
-            print(f"   🧪 Raw LLM keys: {list(data.keys())}")
-
-            answer = (
-                data.get("message", {}).get("content")
-                or data.get("response")
-                or ""
-            )
-
-            print(f"   🧪 Answer length: {len(answer)} chars")
-            print(f"   🧪 Answer preview: {answer[:100]}")
-
-            if answer and answer.strip():
-                # Strip any leftover markdown symbols
-                answer = re.sub(r'\*\*|##|__', '', answer).strip()
-                print(f"   ✅ LLM answered successfully!")
-                return answer
-            else:
-                print(f"   ⚠️ LLM returned empty content!")
-
-        else:
-            print(f"   ❌ LLM bad status {r.status_code}: {r.text[:300]}")
+            answer = r.json().get("message", {}).get("content") or r.json().get("response") or ""
+            if answer.strip():
+                return re.sub(r'\*\*|##|__', '', answer).strip()
+        print(f"   ❌ LLM bad status {r.status_code}")
 
     except requests.exceptions.Timeout:
-        print(f"   ❌ LLM timed out after 180s")
+        print("   ❌ LLM timed out")
     except requests.exceptions.ConnectionError:
-        print(f"   ❌ Cannot connect to Ollama - is it running?")
+        print("   ❌ Cannot connect to Ollama")
     except Exception as e:
-        print(f"   ❌ LLM error: {type(e).__name__}: {e}")
+        print(f"   ❌ LLM error: {e}")
 
-    # =====================
-    # SMART FALLBACK
-    # Only triggers if LLM completely fails
-    # =====================
-    print(f"   ⚠️ LLM failed — using smart fallback...")
+    # Fallback: return extracted source text
+    print("   ⚠️ Using fallback text...")
+    parts = []
+    for texts, n in ((book_texts, 10), (video_texts[:2], 5)):
+        combined = " ".join(texts)
+        sents = [s.strip() for s in re.split(r'(?<=[.!?])\s+', combined) if len(s.strip()) > 40]
+        if sents:
+            parts.append(" ".join(sents[:n]))
+    if parts:
+        return "Here is what the course material covers:\n\n" + "\n\n".join(parts)
+    return "No relevant content found. Please try rephrasing your question."
 
-    if not book_texts and not video_texts:
-        return "No relevant content found. Please try rephrasing your question."
 
-    fallback_parts = []
+# =========================
+# STREAMING ANSWER (/ask/stream)
+# =========================
+@app.route("/ask/stream", methods=["POST"])
+def ask_stream():
+    data = request.json or {}
+    query = data.get("query", "").strip()
 
-    if book_texts:
-        combined_book = " ".join(book_texts)
-        sentences = re.split(r'(?<=[.!?])\s+', combined_book)
-        sentences = [s.strip() for s in sentences if len(s.strip()) > 40]
-        good_sentences = sentences[:10]
-        if good_sentences:
-            fallback_parts.append(" ".join(good_sentences))
+    if not query:
+        return jsonify({"error": "No query provided"}), 400
+    if len(query) > MAX_QUERY_LEN:
+        return jsonify({"error": f"Query too long (max {MAX_QUERY_LEN} characters)"}), 400
 
-    if video_texts:
-        combined_video = " ".join(video_texts[:2])
-        v_sentences = re.split(r'(?<=[.!?])\s+', combined_video)
-        v_sentences = [s.strip() for s in v_sentences if len(s.strip()) > 40]
-        if v_sentences:
-            fallback_parts.append(" ".join(v_sentences[:5]))
+    def generate():
+        try:
+            # Retrieval is fast (<200ms); send sources before LLM even starts
+            results  = search_hybrid(query)
+            sources  = format_sources(results)         # original scores for source links
+            yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
 
-    if fallback_parts:
-        full_text = "\n\n".join(fallback_parts)
-        return (
-            f"Here is what the course material covers on this topic:\n\n"
-            f"{full_text}\n\n"
-            f"For a detailed walkthrough, check the video tutorials below."
-        )
+            reranked           = rerank(query, results)    # cross-encoder rerank
+            context, _, _      = _build_context(reranked)  # LLM sees the best-ranked chunks
+            prompt             = _build_prompt(query, context)
 
-    return "Check the video tutorials below for detailed explanations."
+            resp = requests.post(
+                OLLAMA_CHAT_URL,
+                json={
+                    "model": LLM_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": True,
+                    "options": {"temperature": 0.7, "num_predict": 800}
+                },
+                stream=True,
+                timeout=180
+            )
+            resp.raise_for_status()
+
+            for raw_line in resp.iter_lines():
+                if not raw_line:
+                    continue
+                chunk_data = json.loads(raw_line)
+                token = chunk_data.get("message", {}).get("content", "")
+                if token:
+                    yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+                if chunk_data.get("done"):
+                    break
+
+        except requests.exceptions.ConnectionError:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Cannot connect to Ollama — is it running on port 11434?'})}\n\n"
+        except requests.exceptions.Timeout:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'LLM timed out. Try a shorter question.'})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        finally:
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # prevents Nginx/proxy from buffering SSE
+            "Connection": "keep-alive"
+        }
+    )
 
 # =========================
 # FORMAT SOURCES
@@ -322,7 +387,7 @@ def format_sources(results):
     videos = []
     groups = defaultdict(list)
 
-    for c in results["videos"]:
+    for c in results.get("videos", []):
         url = c.get("source_url")
         if url:
             groups[url].append(c)
@@ -346,6 +411,37 @@ def format_sources(results):
     return {"videos": videos}
 
 # =========================
+# RERANKING
+# Cross-encoder re-scores the top-N candidates retrieved by hybrid search.
+# Only the reranked slice is passed to _build_context (LLM context).
+# format_sources still uses the full original results so URL grouping is unaffected.
+# =========================
+def rerank(query, results, top_videos=20):
+    if not RERANKER_AVAILABLE:
+        return results
+
+    videos = results.get("videos", [])[:top_videos]
+    books  = results.get("books",  [])
+    candidates = videos + books
+    if not candidates:
+        return results
+
+    pairs  = [(query, c.get("text", "")[:512]) for c in candidates]
+    scores = _reranker.predict(pairs)
+
+    for c, s in zip(candidates, scores):
+        c["rerank_score"] = float(s)
+
+    reranked_videos = sorted(videos, key=lambda x: x.get("rerank_score", 0), reverse=True)
+    reranked_books  = sorted(books,  key=lambda x: x.get("rerank_score", 0), reverse=True)
+
+    if reranked_videos:
+        top = re.sub(r'^\d+[\s_-]*', '', reranked_videos[0].get("title", ""))[:50]
+        print(f"   🏆 Reranked — top video: {top} ({reranked_videos[0]['rerank_score']:.2f})")
+
+    return {"videos": reranked_videos, "books": reranked_books}
+
+# =========================
 # ROUTES
 # =========================
 @app.route("/")
@@ -354,19 +450,25 @@ def home():
 
 @app.route("/ask", methods=["POST"])
 def ask():
-    query = request.json.get("query", "")
-    
+    data = request.json or {}
+    query = data.get("query", "").strip()
+
     if not query:
         return jsonify({"error": "No query provided"}), 400
+
+    # Bug 6: no length cap — very long queries could overflow Ollama's context or hang
+    if len(query) > MAX_QUERY_LEN:
+        return jsonify({"error": f"Query too long (max {MAX_QUERY_LEN} characters)"}), 400
     
     try:
         print(f"\n{'='*60}")
         print(f"🔍 Query: {query}")
         print(f"{'='*60}")
         
-        results = search_hybrid(query)
-        answer = generate_answer(query, results)
-        sources = format_sources(results)
+        results  = search_hybrid(query)
+        reranked = rerank(query, results)          # cross-encoder rerank before LLM context
+        answer   = generate_answer(query, reranked)
+        sources  = format_sources(results)         # original scores used for source links
         
         print(f"   ✅ Response ready\n")
         
@@ -404,4 +506,5 @@ if __name__ == "__main__":
     print("   Press CTRL+C to quit")
     print("="*60 + "\n")
     
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    # Bug 2: debug=True on 0.0.0.0 exposes the Werkzeug interactive debugger to the whole LAN
+    app.run(debug=False, host="127.0.0.1", port=5000)
